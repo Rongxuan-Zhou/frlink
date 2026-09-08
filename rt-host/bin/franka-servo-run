@@ -1,9 +1,8 @@
 #!/bin/bash
-# franka-servo-run <pusht|pose> — exec the torque-servo container (ExecStart of franka-servo@.service, under systemd-inhibit).
+# franka-servo-run pose — exec the torque-servo container (ExecStart of franka-servo@.service, under systemd-inhibit).
 set -euo pipefail
-mode=${1:?usage: franka-servo-run <pusht|pose>}
+mode=${1:?usage: franka-servo-run pose}
 case "$mode" in
-  pusht) bin=/franka/teleop/cartesian_pose_servo_pusht; args=${FRANKA_PUSHT_ARGS-"--load-mass 0.0 --kz 6000 --klock-rot 150 --null-kp 20 --null-kd 1.0"};;
   pose)  bin=/franka/teleop/cartesian_pose_servo;       args=${FRANKA_POSE_ARGS-""};;
   *) echo "franka-servo-run: unknown mode '$mode'" >&2; exit 64;;
 esac

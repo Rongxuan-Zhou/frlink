@@ -8,7 +8,7 @@
 5. Desk (https://172.16.0.2/desk/): unlock joints, Activate FCI, press Enable — after EVERY robot boot.
 
 ## Daily start / stop
-- Start: `franka-ctl preflight && franka-ctl goto pusht && franka-ctl start pusht` (pose variant: `goto home && start pose`). Confirm `franka-ctl status` shows the servo active and cmd_age_ms/missed counters.
+- Start: `franka-ctl preflight && franka-ctl goto home && franka-ctl start pose`. Confirm `franka-ctl status` shows the servo active and cmd_age_ms/missed counters.
 - rog side: mirror running (`/tmp/franka_current_ee.txt` mtime advancing), `FRANKA_SERVO_HOST=10.10.0.2`, then bridge / collect / deploy as before.
 - Stop: `franka-ctl stop` (SIGTERM → MotionFinished → exit 0 within ~1 s). Then Desk → lock joints if leaving.
 - Nothing else may talk to 172.16.0.2 while a servo runs (no `echo`, no `goto`, no `comm-test`; the gripper TCP path is separate and allowed).
@@ -18,10 +18,10 @@
 |---|---|
 | status | units active/inactive, link/fci carrier, latest franka_link.txt counters, package temp (image presence is reported by `preflight`) |
 | preflight | isolcpus, rtprio 99/memlock, IRQ affinity enp110s0-* = cpu3, NM profiles up, nftables loaded, timesyncd, image, robot ping |
-| start pusht\|pose | `systemctl start franka-servo@<x>` → docker run --privileged --network host --ulimit rtprio=99 … servo with production args |
+| start pose | `systemctl start franka-servo@pose` → docker run --privileged --network host --ulimit rtprio=99 … `cartesian_pose_servo` with production args |
 | stop | `systemctl stop franka-servo@*` (SIGTERM, 10 s grace) |
-| restart pusht\|pose [home] | stop + start; with `home` the matching goto sequence runs in between (this is what rog's Quest B button calls: `restart pusht home`, ~60 s) |
-| goto home\|pusht | home = goto_home factory ready; pusht = 4-step (z=0.35 → SIDE_VIA_Q → PUSHT_SIDE_Q → z=0.098; speeds 0.04/0.04/0.04/0.03). Refuses if a servo is active. |
+| restart pose [home] | stop + start; with `home` the goto home sequence runs in between (this is what rog's Quest B button calls: `restart pose home`) |
+| goto home | `franky_tools/goto_home.py` via `franka-py`: lifts to the table-clearance height first when near the table, FK-checks the joint path, then joint motion to factory ready at speed 0.10. Refuses if a servo is active. |
 | gripper open\|close\|width w\|grasp w\|homing\|read | gripper_cmd; rc 0 ok, 4 franka::Exception; read prints JSON |
 | echo | echo_robot_state once. Refuses if a servo is active. |
 | comm-test --yes | communication_test (kIgnore build) with Enter fed; MOVES THE ARM to factory-ready at speed 0.5, then 10 s zero-torque; expect Avg ≥ 0.99 |
@@ -33,9 +33,9 @@
 | Arm freezes in place while teleoperating; `status` shows cmd_age_ms > 200 | hold engaged: no command packets (bridge dead-man, sender crashed, wrong FRANKA_SERVO_HOST, allowlist drop) | `status`: cmd_drop_allow rising → sender IP not in CMD_ALLOW; cmd_drop_latch rising → another sender holds the latch; cmd_pkts_last_s = 0 → sender dead, restart it. Hold is safe; torque control continues. |
 | rog scripts say EE file STALE / ee_ok false / recorder drops frames | rog mirror not running, link down, or state-dst wrong | alienware `status` → publisher counters; `ip -br addr` on both ends; `ping 10.10.0.1`; restart the rog mirror; `ls --full-time /tmp/franka_current_ee.txt` on rog must advance every 50 ms. |
 | comm-test Avg < 0.99 | NIC coalescing/IRQ on wrong CPU, thermal throttling, another RT load, switch in the FCI path | `ethtool -c enp110s0` (rx-usecs 0), `/proc/interrupts` enp110s0-* only cpu3, `sensors` < 85 C, `ps -eLo cls,rtprio,psr,comm | grep FF`, direct cable to the robot; retry ×3; if still < 0.99 use the I225 NIC. |
-| Servo log reflex repeatedly, or robot light red/yellow | collision or joint-limit reflex; user-stop pressed = needs Desk | Release user-stop, Desk → acknowledge error, re-Activate FCI if it dropped; `franka-ctl stop`, `goto pusht`, `start pusht`. Collision thresholds (30 N/30 Nm) are below the 35 N software freeze. |
+| Servo log reflex repeatedly, or robot light red/yellow | collision or joint-limit reflex; user-stop pressed = needs Desk | Release user-stop, Desk → acknowledge error, re-Activate FCI if it dropped; `franka-ctl stop`, `goto home`, `start pose`. Collision thresholds (30 N/30 Nm) are below the 35 N software freeze. |
 | `status` temp ≥ 85 C, missed cycles growing, tick_max_us_1s > 800 | thermal throttling / hardware stalls (0.3–0.7 ms hwlat events seen at ~100 C) | Stop GPU/CPU jobs on alienware, `docker stats` for stray containers, raise the laptop, check fans; consider `intel_pstate/no_turbo=1`; never train on this machine while it is the RT host. |
-| New sender is ignored, cmd_drop_latch rises, latched_sender is an old ip:port | latch held by a dead/hung sender (releases 1 s after its last packet) | Kill the old sender on rog; wait 1 s; if it persists `franka-ctl restart pusht`. |
+| New sender is ignored, cmd_drop_latch rises, latched_sender is an old ip:port | latch held by a dead/hung sender (releases 1 s after its last packet) | Kill the old sender on rog; wait 1 s; if it persists `franka-ctl restart pose`. |
 | `start` fails: `Unable to find image 'franka-rt:0.17.0-jazzy'` | image pruned or Docker reinstalled | `docker images | grep franka-rt`; rebuild with `~/franka/docker/build-image.sh` (then `teleop/build.sh` for binaries). |
 | `ulimit -r` prints 0 in a new shell | not in `realtime` group / limits.d missing / GUI session predates the change / **Tailscale SSH** (bypasses PAM, so limits.d never applies; a tmux server started from such a login inherits 0) | `groups`, `cat /etc/security/limits.d/99-realtime.conf`, reboot; log in via OpenSSH (port 22) or fix the current shell with `sudo prlimit --pid $$ --rtprio=99:99 --memlock=unlimited:unlimited`. Container servos are unaffected (they use --ulimit rtprio=99). |
 | Link cable pulled / USB dock re-enumerated | NM dropped 10.10.0.2; the port lost its frlink0 name (MAC match in /etc/systemd/network/10-franka-link.link) | `nmcli con up franka-link`; `ip -br link`; if renamed, `nmcli con modify franka-link connection.interface-name <name>`. The FCI side is unaffected. |

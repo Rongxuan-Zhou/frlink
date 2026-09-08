@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""gripper_cmd.py — franky 版一次性夹爪命令。对标 teleop/gripper_cmd.cpp(1:1)。
+"""gripper_cmd.py — franky version of the one-shot gripper command. Counterpart of teleop/gripper_cmd.cpp (1:1).
 
-⚠️ 需 Franka Hand 在位(PushT 推杆构型无夹爪时连接会报 FCI refused,与 C++ 原版一致)。
-夹爪连接独立于机械臂 FCI motion control,可与 servo 共存。
+⚠️ Requires the Franka Hand to be mounted (without a gripper, connecting reports FCI refused, same as the C++ original).
+The gripper connection is independent of the arm's FCI motion control and can coexist with the servo.
 
-用法:
+Usage:
   python gripper_cmd.py <ip> read
   python gripper_cmd.py <ip> open
   python gripper_cmd.py <ip> close [--force 60]
@@ -22,7 +22,7 @@ def main():
               "[--speed v] [--force f]", file=sys.stderr)
         return 1
     ip, cmd = sys.argv[1], sys.argv[2]
-    speed, force = 0.1, 60.0   # 同 C++:60N 持续力(Franka Hand max 70N,UMI 软指需持续施力)
+    speed, force = 0.1, 60.0   # same as C++: 60N sustained force (Franka Hand max 70N; UMI soft fingers need sustained force)
     rest = sys.argv[3:]
     pos = [a for a in rest if not a.startswith("--")]
     i = 0
@@ -36,9 +36,9 @@ def main():
         if cmd == "read":
             print(f'{{"width":{g.width},"max_width":{mw},"is_grasped":{str(g.is_grasped).lower()}}}')
         elif cmd == "open":
-            g.open(speed)                                  # 张到 max
+            g.open(speed)                                  # open to max
         elif cmd == "close":
-            # 同 C++:grasp(0, ..., eps_inner=eps_outer=max_width) → 任意终宽视为成功,持续施力
+            # same as C++: grasp(0, ..., eps_inner=eps_outer=max_width) → any final width counts as success, force is kept applied
             g.grasp(0.0, speed, force, epsilon_inner=mw, epsilon_outer=mw)
         elif cmd == "homing":
             g.homing()

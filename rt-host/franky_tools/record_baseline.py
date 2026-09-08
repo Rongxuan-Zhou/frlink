@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""record_baseline.py — franky 版,记录静止姿态 tau_ext/F_ext baseline。
-对标 scripts/record_baseline.cpp。采 1000 帧 q/tau_ext/F_ext 均值 → JSON。
-只读(+setLoad),不动机器人。可与 servo 关闭时运行。
+"""record_baseline.py — franky version; record the tau_ext/F_ext baseline at a static pose.
+Counterpart of scripts/record_baseline.cpp. Samples 1000 frames of q/tau_ext/F_ext, averages them → JSON.
+Read-only (+setLoad); does not move the robot. Can be run while the servo is off.
 
-用法: python record_baseline.py <ip> [output.json]
+Usage: python record_baseline.py <ip> [output.json]
 """
 import sys, time, json
 import numpy as np

@@ -58,7 +58,7 @@ static void test_rt_setup_cli() {
     const char* argv[] = {"servo", "172.16.0.2", "--load-mass", "0.0", "--cmd-bind", "10.10.0.2",
                           "--no-jlim", "--cmd-allow", "10.10.0.1,127.0.0.1", "--state-dst", "10.10.0.1:50002",
                           "--kz", "3000", "--rt-cpu", "2", "--aux-cpus", "4-15", "--state-files", "1",
-                          "--state-dir", "/tmp/franka", "--cmd-port", "50005", "--null-mode", "pusht-side"};
+                          "--state-dir", "/tmp/franka", "--cmd-port", "50005", "--null-mode", "custom"};
     int argc = sizeof(argv) / sizeof(argv[0]);
     rt::RtCliOptions o;
     CHECK(rt::prescan_rt_args(argc, const_cast<char**>(argv), &o, &err));
@@ -70,7 +70,7 @@ static void test_rt_setup_cli() {
     CHECK_EQ_STR(o.aux_cpus, "4-15");
     // legacy argv survives in order; --cmd-port became a trailing --port
     std::vector<std::string> want = {"servo", "172.16.0.2", "--load-mass", "0.0", "--no-jlim", "--kz", "3000",
-                                     "--null-mode", "pusht-side", "--port", "50005"};
+                                     "--null-mode", "custom", "--port", "50005"};
     CHECK(o.rest_storage == want);
     CHECK(o.rest_argc() == static_cast<int>(want.size()));
     CHECK_EQ_STR(o.rest_argv_ptr()[1], "172.16.0.2");
@@ -85,7 +85,7 @@ static void test_rt_setup_cli() {
       else if (flag == "--no-jlim") { no_jlim = true; i--; }
       else if (flag == "--null-mode") null_mode = argv2[i + 1];
     }
-    CHECK(port == 50005 && kz == 3000 && no_jlim && null_mode == "pusht-side");
+    CHECK(port == 50005 && kz == 3000 && no_jlim && null_mode == "custom");
   }
   {
     const char* argv[] = {"servo", "172.16.0.2", "--port", "50003"};

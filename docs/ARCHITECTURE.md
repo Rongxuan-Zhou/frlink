@@ -84,8 +84,7 @@ at `SCHED_FIFO 85`.
 
 The servo runs inside the `franka-rt:0.17.0-jazzy` container (`--privileged --network host
 --ulimit rtprio=99 --ulimit memlock=-1`), started by `systemd`'s `franka-servo@pose` unit
-under `systemd-inhibit` (no sleep, no lid action while it runs). (A `pusht` instance of the
-same template runs a task-specific variant; not covered here.) Inside the process:
+under `systemd-inhibit` (no sleep, no lid action while it runs). Inside the process:
 
 | thread | CPU | policy | role |
 |---|---|---|---|

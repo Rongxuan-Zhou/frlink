@@ -7,10 +7,7 @@ safety envelope. Day 2 puts a real client on the cable and proves the end-to-end
 
 The checklists as run live in `rt-host/tests/robot_day1.md` and `rt-host/tests/robot_day2.md`;
 the tools they call are in `rt-host/tests/`. Results are kept on the host under
-`tests/results/<date>/robot_day{1,2}/` and are not part of this repository. The host-side
-checklists also contain steps for a task-specific PushT variant (`goto pusht`, `start pusht`,
-recording and deployment); those are out of scope here and are omitted from the procedures
-below.
+`tests/results/<date>/robot_day{1,2}/` and are not part of this repository.
 
 Before either day: `rt-host/tests/rt_bench.sh` (6 checks) and `rt-host/tests/bench_net.sh`
 (5 checks) must pass on the same kernel/driver/image that will run the robot.

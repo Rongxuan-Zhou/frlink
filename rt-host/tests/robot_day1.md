@@ -66,5 +66,4 @@ Every command below runs on alienware unless marked (rog). RES=~/franka/tests/re
 ## 9. Stop + logs (5 min)
 - [ ] `~/franka/bin/franka-ctl stop` → journal ends with `✅ exited (tick=... udp=... total_reflex=0)`; `systemctl show -p ExecMainStatus franka-servo@pose.service` → 0; stop → inactive ≤ 3 s.
 - [ ] `journalctl -u 'franka-servo@*' --since today > $RES/journal_servo.txt`; final link line → $RES/link_final.txt; sink report attached.
-- [ ] Optional: `franka-ctl goto pusht` (4-step, watch the push-rod), `franka-ctl start pusht`, 5-min hold, circle r=0.03, `franka-ctl stop`.
 - [ ] Revert the day-1 env overrides (step 0). Fill robot_day1_report.md, commit.

@@ -1,6 +1,6 @@
 # teleop/rt — RT / network units for the FR3 torque servos
 
-Header-only units linked by `cartesian_pose_servo.cpp`, `cartesian_pose_servo_pusht.cpp` and
+Header-only units linked by `cartesian_pose_servo.cpp` and
 `tests/servo_net_stub.cpp`. Unit tests: `tests/test_rt_units.cpp` (+ `tests/rt_units/*.inc`).
 Build everything with `teleop/build.sh` (runs inside the PART A image via `bin/franka-run`).
 

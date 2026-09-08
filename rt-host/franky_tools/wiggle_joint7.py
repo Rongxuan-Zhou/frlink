@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""wiggle_joint7.py — franky 版,J7 左右摆动诊断。对标 scripts/wiggle_joint7.cpp。
-Ruckig 平滑替代 quintic。从当前姿态出发,只转 J7(手腕),无桌面交互。
+"""wiggle_joint7.py — franky version; J7 back-and-forth wiggle diagnostic. Counterpart of scripts/wiggle_joint7.cpp.
+Ruckig smoothing replaces quintic. Starts from the current pose, rotates J7 (wrist) only, no table interaction.
 
-用法: python wiggle_joint7.py <ip> [--cycles 3] [--amplitude 1.5] [--speed 0.3factor]
+Usage: python wiggle_joint7.py <ip> [--cycles 3] [--amplitude 1.5] [--speed 0.3factor]
 """
 import argparse, sys
 import franky

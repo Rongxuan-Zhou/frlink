@@ -26,10 +26,10 @@ else W "frlink0 absent (ASIX USB port 00:0a:cd:48:1e:dd not present) — remote 
 t=$(/home/rongxuan_zhou/franka/host/franka-thermal-guard.sh --print); [ "$t" -lt 85 ] && P "package temp ${t}C" || F "package temp ${t}C >= 85C"
 [ "$(apt-mark showhold | wc -l)" -ge 9 ] && P "apt holds $(apt-mark showhold | wc -l)" || F "apt holds missing"
 docker image inspect "$IMAGE" >/dev/null 2>&1 && P "image $IMAGE" || F "image $IMAGE missing"
-[ -x /home/rongxuan_zhou/franka/teleop/cartesian_pose_servo_pusht ] && P "servo binaries built" || F "teleop binaries not built"
+[ -x /home/rongxuan_zhou/franka/teleop/cartesian_pose_servo ] && P "servo binaries built" || F "teleop binaries not built"
 systemctl is-active --quiet nftables && P "nftables.service active" || F "nftables.service not active (sudo systemctl enable --now nftables)"
 sudo -n nft list table inet franka >/dev/null 2>&1 && P "nftables inet franka loaded" || W "nftables state not verifiable without sudo -n (run: sudo nft list table inet franka)"
 stray=$(docker ps --format '{{.Names}}' | grep -E '^franka-' | tr '\n' ' '); [ -z "$stray" ] && P "no franka containers running" || W "running: $stray"
-pgrep -f 'cartesian_pose_servo|goto_home|goto_pose_pusht|echo_robot_state|communication_test' >/dev/null && W "stray libfranka process on host: $(pgrep -af 'cartesian_pose_servo|goto_|echo_robot_state|communication_test' | head -3)" || P "no stray libfranka process"
+pgrep -f 'cartesian_pose_servo|goto_home|echo_robot_state|communication_test' >/dev/null && W "stray libfranka process on host: $(pgrep -af 'cartesian_pose_servo|goto_|echo_robot_state|communication_test' | head -3)" || P "no stray libfranka process"
 timedatectl show -p NTPSynchronized --value | grep -q yes && P "clock NTP synchronized" || W "clock not NTP synchronized"
 echo; [ $f = 0 ] && { echo "PREFLIGHT PASS"; exit 0; } || { echo "PREFLIGHT FAIL ($f)"; exit 1; }

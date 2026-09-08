@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-"""wiggle_all_joints.py — franky 版,依次 wiggle J1..J7 ±0.3rad 系统诊断。
-对标 scripts/wiggle_all_joints.cpp。每关节 0→+A→0→-A→0,Ruckig 平滑。
-末尾可选夹爪开闭(无 Franka Hand 时自动跳过)。
+"""wiggle_all_joints.py — franky version; wiggle J1..J7 in turn by ±0.3rad as a system diagnostic.
+Counterpart of scripts/wiggle_all_joints.cpp. Per joint 0→+A→0→-A→0, Ruckig smoothed.
+Optional gripper close/open at the end (skipped automatically when no Franka Hand is present).
 
-⚠️ 全关节运动:确保机器人周围无障碍、远离桌面(建议先 goto_home)。
+⚠️ All-joint motion: make sure the robot's surroundings are clear and it is away from the table (running goto_home first is recommended).
 
-用法: python wiggle_all_joints.py <ip> [--amplitude 0.3] [--factor 0.25] [--no-gripper]
+Usage: python wiggle_all_joints.py <ip> [--amplitude 0.3] [--factor 0.25] [--no-gripper]
 """
 import argparse, sys
 import franky
@@ -16,7 +16,7 @@ import franky_helpers as fh
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ip", nargs="?", default=fh.ROBOT_IP)
-    ap.add_argument("--amplitude", type=float, default=0.3, help="rad/关节")
+    ap.add_argument("--amplitude", type=float, default=0.3, help="rad per joint")
     ap.add_argument("--factor", type=float, default=0.25)
     ap.add_argument("--no-gripper", action="store_true")
     args = ap.parse_args()
@@ -38,7 +38,7 @@ def main():
                 print("  gripper close→open...")
                 g.move(0.01, 0.05); g.open(0.05)
             except Exception as e:
-                print(f"  (跳过夹爪: {type(e).__name__})")
+                print(f"  (skipping gripper: {type(e).__name__})")
         print(f"✅ Done. mode={robot.state.robot_mode}")
         return 0
     except franky.ControlException as e:

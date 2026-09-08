@@ -1,7 +1,7 @@
 #!/bin/bash
 # build-inside.sh — runs INSIDE the franka-rt container (as the host user via FRANKA_RUN_AS_USER=1):
 #   1) libfranka 0.17.0 -> /franka/local, configured exactly like rog + install RPATH so no LD_LIBRARY_PATH/ROS sourcing is needed
-#   2) the 7 teleop targets + a kIgnore-patched communication_test
+#   2) the teleop targets + a kIgnore-patched communication_test
 set -euo pipefail
 LIBFRANKA_COMMIT=4448c390ea7c6af3966bcfae6308d41cee4eb7ac
 COMMON_COMMIT=cd38d0ec300b7e6864407d85d1e88e2fba31ccd5
@@ -26,7 +26,7 @@ echo "== teleop binaries"
 cd /franka/teleop
 CXX="g++ -O2 -std=c++17 -pthread -I$PREFIX/include -I$EX -I/usr/include/eigen3"
 LD="-L$PREFIX/lib -lfranka -Wl,-rpath,$RPATH"
-for t in cartesian_pose_servo cartesian_pose_servo_pusht goto_home goto_pose_pusht pusht_pose_servo; do
+for t in cartesian_pose_servo goto_home; do
   echo "  $t"; $CXX $t.cpp $EX/examples_common.cpp $LD -o $t
 done
 echo "  gripper_cmd"; $CXX gripper_cmd.cpp $LD -o gripper_cmd
@@ -47,5 +47,5 @@ echo "LD_LIBRARY_PATH=[${LD_LIBRARY_PATH:-}]"
 ldd $PREFIX/lib/libfranka.so | grep -E 'pinocchio|not found'
 ! ldd $PREFIX/lib/libfranka.so | grep -q 'not found'
 readelf -d $PREFIX/lib/libfranka.so | grep -E 'RUNPATH|RPATH'
-ls -l /franka/teleop/cartesian_pose_servo_pusht /franka/local/bin/communication_test /franka/local/bin/echo_robot_state
+ls -l /franka/teleop/cartesian_pose_servo /franka/local/bin/communication_test /franka/local/bin/echo_robot_state
 echo "BUILD OK"

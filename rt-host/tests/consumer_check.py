@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """consumer_check.py - emulate rog consumers on the mirror dir.
 A  03 bridge start-up:   franka_init_pose.txt appears with 16 tokens within --init-timeout (5 s)
-B  franka_pusht_state_fn: 20 Hz poll for --secs: age<=250 ms AND exactly 16 tokens  -> ee_ok ratio >= 0.995, token errors 0
+B  client state reader:   20 Hz poll for --secs: age<=250 ms AND exactly 16 tokens  -> ee_ok ratio >= 0.995, token errors 0
 C  deploy watchdog:       10 Hz poll: age>0.5 s streak; PASS if max streak < 5 and max age < 0.5 s
 D  03 dead-man:           90 Hz reads of the EE file for --secs: 0 parse failures (16 float tokens)
 E  joint/wrench:          28/6 tokens, age <= 0.5 s / 0.25 s at end (WARN only)

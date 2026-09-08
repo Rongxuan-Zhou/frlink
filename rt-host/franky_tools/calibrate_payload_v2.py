@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""calibrate_payload_v2.py — franky 版,COM 坐标下降标定(m_load=0.25 固定)。
-对标 scripts/calibrate_payload_v2.cpp。只读(+setLoad sweep),不动机器人。
+"""calibrate_payload_v2.py — franky version; COM coordinate-descent calibration (m_load=0.25 fixed).
+Counterpart of scripts/calibrate_payload_v2.cpp. Read-only (+setLoad sweep); does not move the robot.
 
-策略: Phase1 sweep X → Phase2 sweep Y(X固定) → Phase3 sweep Z(X,Y固定) → 验证。
+Strategy: Phase1 sweep X → Phase2 sweep Y (X fixed) → Phase3 sweep Z (X,Y fixed) → verify.
 
-用法: python calibrate_payload_v2.py <robot-ip>
+Usage: python calibrate_payload_v2.py <robot-ip>
 """
 import sys, time
 import numpy as np
@@ -50,15 +50,15 @@ def main():
     bY = sweep_axis(r, 'Y', bX, bY, bZ, [-0.10,-0.05,0.00,0.05,0.10])
     print("\n===== Phase 3: Sweep Z (X,Y fixed) =====")
     bZ = sweep_axis(r, 'Z', bX, bY, bZ, [0.00,0.025,0.050,0.075,0.100])
-    print("\n===== Final: 应用最优 + 验证 =====")
+    print("\n===== Final: apply optimum + verify =====")
     F_final = measure_F_norm(r, bX, bY, bZ, 500)
     print(f"  Optimal F_x_Cload : [{bX}, {bY}, {bZ}] m")
     print(f"  Final ‖F‖         : {F_final:.4f} N (500 frames)")
     print(f"  Improvement vs P0 : {F0-F_final:.4f} N ({(1-F_final/F0)*100:.1f}%)")
-    msg = ("✅ <0.5N payload bias 完全消除" if F_final<0.5 else
-           "🟢 <1.0N 达到目标" if F_final<1.0 else
-           "🟡 显著改善但>1N,残余可能 model bias" if F_final<F0*0.7 else
-           "⚠️ 改善有限,建议二轮 sweep")
+    msg = ("✅ <0.5N payload bias fully eliminated" if F_final<0.5 else
+           "🟢 <1.0N target reached" if F_final<1.0 else
+           "🟡 Significant improvement but >1N; residual may be model bias" if F_final<F0*0.7 else
+           "⚠️ Limited improvement; a second sweep round is recommended")
     print(f"  {msg}")
     print(f"\nTo persist (Desk): Load mass={M_LOAD}kg, Load center=[{bX}, {bY}, {bZ}] m")
     return 0

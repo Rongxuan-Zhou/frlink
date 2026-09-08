@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""snapshot_setload.py — franky 版,setLoad(0.25) 后打 N 帧 JSON state。
-对标 scripts/snapshot_setload.cpp(格式匹配 analyze_diagnose.py 期望)。
-只读(+setLoad),每帧一行 JSON 到 stdout。
+"""snapshot_setload.py — franky version; after setLoad(0.25), dump N frames of JSON state.
+Counterpart of scripts/snapshot_setload.cpp (format matches what analyze_diagnose.py expects).
+Read-only (+setLoad); one JSON line per frame to stdout.
 
-用法: python snapshot_setload.py <robot-ip> <n_frames>
+Usage: python snapshot_setload.py <robot-ip> <n_frames>
 """
 import sys, time
 import franky

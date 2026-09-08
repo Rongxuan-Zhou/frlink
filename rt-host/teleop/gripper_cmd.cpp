@@ -1,11 +1,11 @@
-// gripper_cmd.cpp — 一次性夹爪命令（open/close/grasp）
-// 用法:
-//   gripper_cmd <ip> open                       # 张到 max
-//   gripper_cmd <ip> close                      # 闭到 0
-//   gripper_cmd <ip> width <w_m> [--speed 0.1]  # 移动到指定宽度 (米)
+// gripper_cmd.cpp — One-shot gripper command (open/close/grasp)
+// Usage:
+//   gripper_cmd <ip> open                       # open to max
+//   gripper_cmd <ip> close                      # close to 0
+//   gripper_cmd <ip> width <w_m> [--speed 0.1]  # move to the specified width (meters)
 //   gripper_cmd <ip> grasp <w_m> [--speed 0.1] [--force 30]
-//   gripper_cmd <ip> homing                     # 校准 (~10s)
-//   gripper_cmd <ip> read                       # 打 state
+//   gripper_cmd <ip> homing                     # calibrate (~10s)
+//   gripper_cmd <ip> read                       # print state
 #include <franka/exception.h>
 #include <franka/gripper.h>
 #include <iostream>
@@ -20,8 +20,8 @@ int main(int argc, char** argv) {
   std::string ip = argv[1];
   std::string cmd = argv[2];
   double speed = 0.1;
-  double force = 60.0;   // 30 → 60 N 持续力 (Franka Hand max 70 N continuous)
-                          // UMI 3D 柔性指需要持续施力维持形变贴合
+  double force = 60.0;   // 30 → 60 N continuous force (Franka Hand max 70 N continuous)
+                          // UMI 3D compliant fingers need sustained force to keep the deformed fit
   for (int i = 3; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--speed" && i + 1 < argc) speed = std::stod(argv[++i]);
@@ -39,10 +39,10 @@ int main(int argc, char** argv) {
     if (cmd == "open") {
       g.move(state.max_width, speed);
     } else if (cmd == "close") {
-      // 用 grasp() 持续施力, 不用 move(0)
-      // move() 是位置控制: 碰到物体停下但不持续顶, UMI 软指会回弹
-      // grasp(target=0, speed, force, eps_inner, eps_outer) 持续施力维持夹紧
-      // eps_inner/outer 设大 (max_width) 让任意 final width 都视为成功 → 持续 force
+      // Use grasp() for sustained force, not move(0)
+      // move() is position control: it stops on contact with the object but does not keep pressing, so the UMI soft fingers spring back
+      // grasp(target=0, speed, force, eps_inner, eps_outer) keeps applying force to maintain the grip
+      // eps_inner/outer set large (max_width) so any final width counts as success → sustained force
       g.grasp(0.0, speed, force, state.max_width, state.max_width);
     } else if (cmd == "homing") {
       g.homing();

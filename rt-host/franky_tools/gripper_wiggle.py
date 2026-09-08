@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""gripper_wiggle.py — franky 版,Franka Hand 张闭 2 次诊断。
-对标 scripts/gripper_wiggle.cpp。⚠️ 需 Franka Hand 在位(PushT 推杆构型无夹爪)。
+"""gripper_wiggle.py — franky version; Franka Hand open/close 2-cycle diagnostic.
+Counterpart of scripts/gripper_wiggle.cpp. ⚠️ Requires the Franka Hand to be mounted.
 
-用法: python gripper_wiggle.py <ip> [--cycles 2] [--speed 0.05]
+Usage: python gripper_wiggle.py <ip> [--cycles 2] [--speed 0.05]
 """
 import argparse, sys
 import franky
@@ -13,7 +13,7 @@ def main():
     ap.add_argument("ip")
     ap.add_argument("--cycles", type=int, default=2)
     ap.add_argument("--speed", type=float, default=0.05)
-    ap.add_argument("--closed", type=float, default=0.01, help="闭合宽度 m(留余量)")
+    ap.add_argument("--closed", type=float, default=0.01, help="closed width in m (leaves some margin)")
     args = ap.parse_args()
     try:
         g = franky.Gripper(args.ip)

@@ -10,25 +10,25 @@ RES=~/franka/tests/results/$(date +%F)/robot_day2 (on alienware); rog commands a
 - [ ] Desk: FCI active, Enable pressed. `franka-ctl preflight` PASS. Package temp < 80 C.
 
 ## 1. 10-min Quest teleop (20 min)
-- [ ] `franka-ctl goto pusht` → 4-step home OK. `franka-ctl start pusht`.
-- [ ] (rog) launch the bridge as launch_pusht.sh does (03_webxr_to_franka_pusht.py --live … --udp-host 10.10.0.2); it must print the init pose from the mirror within 5 s.
+- [ ] `franka-ctl goto home` → `✅ at [factory ready]`. `franka-ctl start pose`.
+- [ ] (rog) launch the teleop bridge with `--udp-host 10.10.0.2`; it must print the init pose from the mirror within 5 s.
 - [ ] Alienware: `for i in $(seq 600); do franka-ctl status | grep -E 'cmd_age_ms|missed|reflex|freeze'; sleep 1; done > $RES/teleop_link_samples.txt`
 - [ ] Teleop 10 min. PASS: reflex_count 0, freeze 0 unless a real collision, missed_cycles_total ≤ 20, cmd_pkts_last_s ≈ 85–92 while moving, dead-man holds without drift, motion as smooth as on rog.
 
 ## 2. 10 B-button restarts (15 min)
-- [ ] For i in 1..10: press B; rog bridge calls `ssh alienware-rt restart pusht home` (4-step home in between); on alienware `journalctl -u franka-servo@pusht.service -f -o short-precise` — time from `Stopping` to the new init-pose line. Record (i,seconds,ok) in $RES/restarts.csv.
-      PASS: all 10 ≤ 90 s with the home sequence (≤ 15 s if rog calls plain `restart pusht`), the bridge reconnects each time, 0 reflex.
+- [ ] For i in 1..10: press B; rog bridge calls `ssh alienware-rt restart pose home` (goto home in between); on alienware `journalctl -u franka-servo@pose.service -f -o short-precise` — time from `Stopping` to the new init-pose line. Record (i,seconds,ok) in $RES/restarts.csv.
+      PASS: all 10 ≤ 60 s with the home sequence (≤ 15 s if rog calls plain `restart pose`), the bridge reconnects each time, 0 reflex.
 
-## 3. 20 gripper commands (10 min) — only with the gripper mounted; SKIP if the push-rod is mounted
+## 3. 20 gripper commands (10 min) — Franka Hand mounted
 - [ ] `for i in $(seq 10); do franka-ctl gripper close; echo rc=$?; franka-ctl gripper open; echo rc=$?; done | tee $RES/gripper.txt`
       PASS: 20× rc=0, `franka-ctl gripper read` JSON with width ≈ max_width after open; rc=4 → note the franka::Exception text.
 
 ## 4. 5 recorded episodes + assemble (30 min)
-- [ ] (rog) `python scripts/collect_pusht_lewm.py --task pusht --auto-end-secs 20` ×5. Each episode `ee_ok` ratio ≥ 0.99. Record in $RES/episodes.txt.
+- [ ] (rog) run the episode recorder ×5 (auto-end after 20 s). Each episode `ee_ok` ratio ≥ 0.99. Record in $RES/episodes.txt.
 - [ ] (rog) assemble step → 5 episodes, 0 frames dropped for staleness, exit 0.
 
 ## 5. 5 deploy rollouts (20 min)
-- [ ] (rog) deploy_pusht_lewm.py ×5 with deploy_obs_publisher.py running. PASS: pre-check passes; no WATCHDOG pause; alienware link shows cmd_pkts_last_s ≈ 10; reflex_count 0. Record in $RES/deploy.txt.
+- [ ] (rog) run the policy deploy script ×5 with the observation publisher running. PASS: pre-check passes; no WATCHDOG pause; alienware link shows cmd_pkts_last_s ≈ 10; reflex_count 0. Record in $RES/deploy.txt.
 
 ## 6. 60-min thermal soak (65 min)
 - [ ] Servo active with the rog bridge idle (dead-man) or a rog-side sender; alienware: `for i in $(seq 360); do echo "$(date +%s),$(sensors -j | python3 -c 'import json,sys;print(json.load(sys.stdin)["coretemp-isa-0000"]["Package id 0"]["temp1_input"])'),$(franka-ctl status | tr '\n' ' ')"; sleep 10; done > $RES/soak_temps.csv`
@@ -38,6 +38,6 @@ RES=~/franka/tests/results/$(date +%F)/robot_day2 (on alienware); rog commands a
 ## 7. Rollback rehearsal (< 15 min, timed)
 - [ ] t0=$(date +%s). `franka-ctl stop`. Move the FCI cable back to rog eno1.
 - [ ] (rog) `nmcli con up franka-fci`; `ping -c 3 172.16.0.2` → 0 loss.
-- [ ] (rog) `unset FRANKA_SERVO_HOST`, stop the rog mirror, `cd ~/franka/teleop && ./launch_pusht.sh servo-only` → `/tmp/franka_servo.log` shows the init pose; `python3 scripts/franka_pusht_state_fn.py --selftest --secs 5` OK.
+- [ ] (rog) `unset FRANKA_SERVO_HOST`, stop the rog mirror, launch the local servo (`cartesian_pose_servo 172.16.0.2`) → `/tmp/franka_servo.log` shows the init pose; the client state reader self-test (5 s) OK.
 - [ ] `echo "rollback_seconds=$(( $(date +%s) - t0 ))" | tee $RES/rollback.txt` → PASS < 900. Decide the steady-state host; if staying on alienware, move the cable back and re-run step 0.
 - [ ] Fill $RES/robot_day2_report.md, commit.

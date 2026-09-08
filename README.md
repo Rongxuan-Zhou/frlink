@@ -90,7 +90,7 @@ rt-host/                  RT host half (export of ~/franka on the host)
   docker/                 Dockerfile + build scripts for franka-rt:0.17.0-jazzy
   teleop/                 servo and motion-helper sources, rt/ header units, tests/
   tests/                  benches, FRST1 sink, fake sender, robot-day checklists
-  franky_tools/           franky-based calibration scripts (host only, no servo active)
+  franky_tools/           franky-based host-native scripts: goto_home.py (used by `goto home`), calibration, wiggles (no servo active)
   docs/                   INTERFACE, RUNBOOK, ASSESSMENT as kept on the host
 client/                   client half (state mirror, franka-remote, preflight, bridge, launch_live.sh) — see client/README.md
 ```

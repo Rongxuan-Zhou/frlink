@@ -1,22 +1,22 @@
-// cartesian_pose_servo.cpp  (实际是 cartesian impedance torque control)
+// cartesian_pose_servo.cpp  (actually cartesian impedance torque control)
 //
-// 顶层逻辑：
-//   • 控制器返回 franka::Torques（不是 CartesianPose）
-//   • 自己用 Eigen 实现笛卡尔阻抗 PD 律：tau = J^T (−K Δp − D ẋ) + coriolis
-//   • libfranka 内部不再做 IK，杜绝 cartesian_motion_generator_* 整族 reflex
-//   • UDP 接外部 4×4 target，二阶级联滤波到 desired pose
-//   • reflex 仅来自关节力矩绝对上限或碰撞（远比 motion_generator 宽松）
+// Top-level logic:
+//   • The controller returns franka::Torques (not CartesianPose)
+//   • Cartesian impedance PD law implemented ourselves with Eigen: tau = J^T (−K Δp − D ẋ) + coriolis
+//   • libfranka no longer does IK internally, eliminating the whole cartesian_motion_generator_* reflex family
+//   • UDP receives an external 4×4 target, second-order cascaded filter to the desired pose
+//   • reflexes only come from the absolute joint-torque limit or collisions (far more lenient than motion_generator)
 //
-// 跟原 cartesian_impedance_control.cpp 例子的差异：
-//   • equilibrium pose 不固定 = init，而是从 UDP 动态更新 → 用户拖着机械臂走
-//   • 加二阶滤波避免 90Hz UDP 输入造成阻抗抖
-//   • 加 reflex retry + freeze 框架（虽然这套架构下 reflex 应大幅减少）
+// Differences from the original cartesian_impedance_control.cpp example:
+//   • equilibrium pose is not fixed = init; it is updated dynamically from UDP → the user drags the arm along
+//   • second-order filter added to avoid impedance jitter caused by the 90Hz UDP input
+//   • reflex retry + freeze framework added (although reflexes should be far fewer under this architecture)
 //
-// 用法：
+// Usage:
 //   cartesian_pose_servo <robot-ip> [--port 50001]
-//                                   [--alpha 0.005]   二阶滤波系数
-//                                   [--K-t 150]       平移刚度 N/m
-//                                   [--K-r 10]        旋转刚度 Nm/rad
+//                                   [--alpha 0.005]   second-order filter coefficient
+//                                   [--K-t 150]       translational stiffness N/m
+//                                   [--K-r 10]        rotational stiffness Nm/rad
 
 #include <array>
 #include <atomic>
@@ -65,7 +65,7 @@ std::atomic<bool> g_stop{false};
 std::atomic<bool> g_freeze{false};
 std::atomic<uint64_t> g_packet_count{0};
 std::atomic<uint64_t> g_freeze_drops{0};
-std::atomic<int64_t> g_last_recv_ms{0};   // user 松手检测用
+std::atomic<int64_t> g_last_recv_ms{0};   // used for user let-go detection
 std::atomic<bool> g_recovering{false};      // PART B: true from a reflex until robot.control() re-enters
 std::atomic<uint64_t> g_reflex_count{0};    // PART B: mirrors total_reflex for the link writer
 
@@ -111,8 +111,8 @@ int main(int argc, char** argv) {
   }
   std::string robot_ip = argv[1];
   int port = 50001;
-  double alpha = 0.050;   // 0.03 → 0.05：响应快 ~70%（latency 50ms→30ms）
-  double K_t = 1000.0;    // 500 → 1000：真 stiff，user 想要的 contact-rich 跟随
+  double alpha = 0.050;   // 0.03 → 0.05: ~70% faster response (latency 50ms→30ms)
+  double K_t = 1000.0;    // 500 → 1000: truly stiff, the contact-rich tracking the user wants
   double K_r = 80.0;      // 40 → 80
   for (int i = 2; i < argc; i += 2) {
     if (i + 1 >= argc) break;
@@ -178,8 +178,8 @@ int main(int argc, char** argv) {
     robot.setLoad(kMLoad, kCom, kInertia);
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
-    // torque control 模式下 collision threshold 跟笛卡尔位姿模式略不同
-    // 设较高值给 user 推机械臂的余量
+    // In torque control mode the collision thresholds differ slightly from cartesian pose mode
+    // Set higher values to give the user margin to push the arm
     robot.setCollisionBehavior({{30, 30, 30, 30, 30, 30, 30}}, {{30, 30, 30, 30, 30, 30, 30}},
                                {{30, 30, 30, 30, 30, 30}}, {{30, 30, 30, 30, 30, 30}});
 
@@ -203,7 +203,7 @@ int main(int argc, char** argv) {
       rt::run_cmd_listener(cmd_sock, cmd_filter, target_raw, cmd_hooks);
     });
 
-    // 当前 EE 共享：让 02 标定时能读到 robot 实际位置（不靠 02 累加器）
+    // Current EE sharing: lets 02 read the robot's actual position during calibration (instead of relying on the 02 accumulator)
     // PART B: combined 20 Hz writer kept (EE, wrench, joint back-to-back); each body goes
     // through the shared formatter + sink (file + FRST1 datagram).
     rt::TripleBuffer<Pose16> current_ee(init_pose);
@@ -233,7 +233,7 @@ int main(int argc, char** argv) {
       rt::run_link_writer(g_stop, link_src, sink, 200);
     });
 
-    // 二阶级联滤波状态
+    // Second-order cascaded filter state
     std::array<double, 16> raw_smooth = init_pose;
     std::array<double, 16> filtered = init_pose;
     // PART B: RT-side target override (200 ms hold / F-T emergency / reflex recovery). The tick
@@ -247,27 +247,27 @@ int main(int argc, char** argv) {
     const double alpha_filt = alpha;
 
     // ══════════════════════════════════════════════════════════════════
-    // 阻抗参数（free-space 标称值；contact 时变阻抗会软化）
+    // Impedance parameters (free-space nominal values; variable impedance softens them on contact)
     // ══════════════════════════════════════════════════════════════════
-    // K_free = K_t (cmd-line)，K_contact = K_t * 0.25 (软化 4×)
+    // K_free = K_t (cmd-line), K_contact = K_t * 0.25 (softened 4×)
     const double K_t_contact_ratio = 0.25;
     const double K_r_contact_ratio = 0.25;
 
-    // F/T 触发参数（O_F_ext_hat_K 估计的末端外力）
-    // 变阻抗仅在大力接触时启动 (10-25N 间插值)，不打扰 stiff 跟随
-    const double F_low = 10.0;       // |F|>10N 才开始软化
-    const double F_high = 25.0;      // |F|>25N 完全软化
-    const double F_emergency = 35.0; // |F|>35N 紧急冻结
-    // K=1000 stiff PD 让 EE 杠杆臂 30cm × 几 N → 正常 5-7 Nm，旧 6Nm 太敏感
-    // 抬到 20Nm：仍能捕获真正异常（接触 + 长杠杆 = 真碰撞），不误报正常操作
+    // F/T trigger parameters (external end-effector force estimated by O_F_ext_hat_K)
+    // Variable impedance only kicks in on strong contact (interpolated between 10-25N), without disturbing stiff tracking
+    const double F_low = 10.0;       // softening starts only when |F|>10N
+    const double F_high = 25.0;      // fully softened when |F|>25N
+    const double F_emergency = 35.0; // emergency freeze when |F|>35N
+    // With K=1000 stiff PD, a 30cm EE lever arm × a few N → 5-7 Nm normally; the old 6Nm was too sensitive
+    // Raised to 20Nm: still catches real anomalies (contact + long lever arm = real collision) without false alarms during normal operation
     const double T_emergency = 20.0;
 
-    // Singularity-aware：FR3 home w ≈ 0.07-0.10，临界 w ≈ 0.01。把阈值下移
-    // 让 home 区域 K 永远满刻度，仅在极端 elbow 伸直时缩 K
-    const double w_min = 0.005;      // 几乎奇异
-    const double w_full = 0.015;     // 这以上 K 满刻度（home 远超此值）
+    // Singularity-aware: FR3 home w ≈ 0.07-0.10, critical w ≈ 0.01. Thresholds moved down
+    // so K stays at full scale throughout the home region and only shrinks when the elbow is extremely straight
+    const double w_min = 0.005;      // almost singular
+    const double w_full = 0.015;     // above this K is at full scale (home is far above this value)
 
-    // FR3 关节限位 (datasheet)
+    // FR3 joint limits (datasheet)
     struct JL { double lo, hi; };
     const std::array<JL, 7> jlim = {{
         {-2.7437, +2.7437},  // J1
@@ -281,12 +281,12 @@ int main(int argc, char** argv) {
     const double jlim_margin = 0.50;
     const double jlim_K = 400.0;
     const double jlim_D = 25.0;
-    // hard_cap 已弃用：现在用零空间投影代替（不破坏 task coordination）
+    // hard_cap is deprecated: null-space projection is used instead (does not break task coordination)
 
-    // 上次紧急冻结时间，用于打印 throttle
+    // Time of the last emergency freeze, used to throttle printing
     int64_t last_emergency_log_ms = 0;
-    // emergency 持续期：触发后 1500ms 内强制 freeze + UDP 丢弃
-    // 避免 02 持续推 last_target 把 emergency hold 立即覆盖
+    // emergency hold period: for 1500ms after triggering, force freeze + drop UDP
+    // Prevents 02 continuously pushing last_target from immediately overwriting the emergency hold
     int64_t emergency_until_ms = 0;
     const int64_t kEmergencyHoldMs = 1500;
 
@@ -301,7 +301,7 @@ int main(int argc, char** argv) {
                           franka::Duration /*period*/) -> franka::Torques {
       tick_stats.on_tick(rt::mono_now_ns());  // PART B: entry-interval stats (no alloc/IO/locks)
       tick++;
-      // 把 robot 实际 EE 暴露给 02 标定模式（lock-free triple buffer）
+      // Expose the robot's actual EE to the 02 calibration mode (lock-free triple buffer)
       current_ee.write(state.O_T_EE);
       // W1 wrench expose: also set wrench for franka_wrench.txt (20Hz writer reads it)
       current_wrench.write(state.O_F_ext_hat_K);
@@ -317,8 +317,8 @@ int main(int argc, char** argv) {
         current_joint.write(jbuf);
       }
 
-      // user 松手检测：UDP 200ms 没收到包 → 让 target_raw 跟随当前 EE，
-      // 这样 PD error → 0，机械臂立刻停下不再"飘"到 Python 累加器最后值
+      // User let-go detection: no UDP packet received for 200ms → make target_raw follow the current EE,
+      // so the PD error → 0 and the arm stops immediately instead of "drifting" to the Python accumulator's last value
       auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
       int64_t since_recv = now_ms - g_last_recv_ms.load();
@@ -337,7 +337,7 @@ int main(int argc, char** argv) {
 
       std::array<double, 16> raw_target = rt_override_active ? rt_override : target_raw.read();
 
-      // ── 二阶级联滤波 raw_target → raw_smooth → filtered ──
+      // ── Second-order cascaded filter raw_target → raw_smooth → filtered ──
       Eigen::Map<const Eigen::Matrix<double, 4, 4>> rt_mat(raw_target.data());
       Eigen::Map<Eigen::Matrix<double, 4, 4>> rs_mat(raw_smooth.data());
       Eigen::Quaterniond q_rt(rt_mat.topLeftCorner<3, 3>());
@@ -368,7 +368,7 @@ int main(int argc, char** argv) {
       filtered[3] = filtered[7] = filtered[11] = 0.0;
       filtered[15] = 1.0;
 
-      // ── 笛卡尔阻抗 PD 律 (复用 libfranka 自带 cartesian_impedance_control 例子) ──
+      // ── Cartesian impedance PD law (reused from libfranka's own cartesian_impedance_control example) ──
       Eigen::Affine3d desired_T(Eigen::Matrix4d::Map(filtered.data()));
       Eigen::Vector3d position_d(desired_T.translation());
       Eigen::Quaterniond orientation_d(desired_T.rotation());
@@ -393,14 +393,14 @@ int main(int argc, char** argv) {
       Eigen::Map<const Eigen::Matrix<double, 7, 1>> dq(state.dq.data());
 
       // ════════════════════════════════════════════════════════════════
-      // [Fix 1] F/T 反馈进环：紧急停 + 监控
+      // [Fix 1] F/T feedback in the loop: emergency stop + monitoring
       // ════════════════════════════════════════════════════════════════
       Eigen::Map<const Eigen::Matrix<double, 6, 1>> F_ext(state.O_F_ext_hat_K.data());
       double F_force_norm = F_ext.head(3).norm();
       double F_torque_norm = F_ext.tail(3).norm();
       bool emergency = (F_force_norm > F_emergency) || (F_torque_norm > T_emergency);
       if (emergency) {
-        // 复用 freeze 机制让 udp_listener 丢弃后续 UDP，不再覆盖紧急 hold
+        // Reuse the freeze mechanism so udp_listener drops subsequent UDP and no longer overwrites the emergency hold
         g_freeze.store(true);
         emergency_until_ms = now_ms + kEmergencyHoldMs;
         rt_override = state.O_T_EE;        // was: target_raw.set(state.O_T_EE)
@@ -412,15 +412,15 @@ int main(int argc, char** argv) {
           last_emergency_log_ms = now_ms;
         }
       } else if (emergency_until_ms > 0 && now_ms > emergency_until_ms) {
-        // 紧急期过 + F/T 已恢复 → 解 freeze 让 UDP 重新生效
+        // Emergency period over + F/T recovered → release freeze so UDP takes effect again
         g_freeze.store(false);
         emergency_until_ms = 0;
         std::cerr << "🟢 emergency hold released, UDP resumed" << std::endl;
       }
 
       // ════════════════════════════════════════════════════════════════
-      // [Fix 3] Singularity-aware：用 manipulability w 缩 K
-      // w = sqrt(det(J J^T))，elbow 伸直时 w → 0，J^T 病态 → K 必须降
+      // [Fix 3] Singularity-aware: scale K down using manipulability w
+      // w = sqrt(det(J J^T)); when the elbow is straight w → 0, J^T is ill-conditioned → K must be reduced
       // ════════════════════════════════════════════════════════════════
       Eigen::Matrix<double, 6, 6> JJT = jacobian * jacobian.transpose();
       double det_JJT = JJT.determinant();
@@ -428,25 +428,25 @@ int main(int argc, char** argv) {
       double k_sing_scale = std::clamp((w - w_min) / (w_full - w_min), 0.0, 1.0);
 
       // ════════════════════════════════════════════════════════════════
-      // [Fix 2] 变阻抗：F/T 检测接触强度 → K 在 [K_contact, K_free] 间插值
+      // [Fix 2] Variable impedance: F/T detects contact intensity → K interpolated within [K_contact, K_free]
       // ════════════════════════════════════════════════════════════════
       double contact_alpha = std::clamp((F_force_norm - F_low) / (F_high - F_low), 0.0, 1.0);
       double K_t_now = ((1.0 - contact_alpha) + contact_alpha * K_t_contact_ratio) * K_t * k_sing_scale;
       double K_r_now = ((1.0 - contact_alpha) + contact_alpha * K_r_contact_ratio) * K_r * k_sing_scale;
-      // 安全下限避免数值奇异
+      // Safety lower bound to avoid numerical singularity
       K_t_now = std::max(K_t_now, 10.0);
       K_r_now = std::max(K_r_now, 1.0);
 
-      // 固定尺寸 Eigen 避免 1kHz 控制循环内堆分配 jitter
+      // Fixed-size Eigen to avoid heap-allocation jitter inside the 1kHz control loop
       Eigen::Matrix<double, 6, 6> stiff_now = Eigen::Matrix<double, 6, 6>::Zero();
       Eigen::Matrix<double, 6, 6> damp_now  = Eigen::Matrix<double, 6, 6>::Zero();
       stiff_now.topLeftCorner<3, 3>() = K_t_now * Eigen::Matrix3d::Identity();
       stiff_now.bottomRightCorner<3, 3>() = K_r_now * Eigen::Matrix3d::Identity();
-      // critical damping = 2*sqrt(K*M_eff)。FR3 末端含 Hand 等效质量 ≈ 4-6 kg
-      // 之前用 2*sqrt(K) 等效假设 M=1，K=1000 时只够 45% critical damping → 抖振
-      // M_eff 取 5.0 让阻尼匹配实际质量
-      const double M_eff_t = 5.0;   // 平移等效质量
-      const double M_eff_r = 0.3;   // 旋转等效转动惯量 (Franka EE inertia)
+      // critical damping = 2*sqrt(K*M_eff). FR3 end effector incl. Hand has an effective mass ≈ 4-6 kg
+      // Previously 2*sqrt(K) was used, equivalent to assuming M=1; at K=1000 that is only 45% of critical damping → chatter
+      // M_eff taken as 5.0 so the damping matches the actual mass
+      const double M_eff_t = 5.0;   // translational effective mass
+      const double M_eff_r = 0.3;   // rotational effective moment of inertia (Franka EE inertia)
       damp_now.topLeftCorner<3, 3>() = 2.0 * std::sqrt(K_t_now * M_eff_t) * Eigen::Matrix3d::Identity();
       damp_now.bottomRightCorner<3, 3>() = 2.0 * std::sqrt(K_r_now * M_eff_r) * Eigen::Matrix3d::Identity();
 
@@ -454,12 +454,12 @@ int main(int argc, char** argv) {
                                  (-stiff_now * error - damp_now * (jacobian * dq));
 
       // ════════════════════════════════════════════════════════════════
-      // [Fix 4] 任务级约束：jlim avoidance 投影到 J 的零空间，不破坏 task
-      // N = I - J^+ J ， J^+ 用 DLS 阻尼伪逆防 singular 时 N 病态
+      // [Fix 4] Task-level constraint: jlim avoidance projected into the null space of J, does not break the task
+      // N = I - J^+ J , J^+ uses the DLS damped pseudo-inverse to keep N well-conditioned near singularities
       // ════════════════════════════════════════════════════════════════
-      // DLS 阻尼系数：λ=0.05 在 FR3 σ_min ≈ 0.05-0.1 时放大率达 8-10×，让 N(J)
-      // 投影漏到 J 的 range 空间 5-10%，jlim 反推会拉走末端。Khatib '95 + libfranka
-      // 范例的标准取法是 0.10-0.20，contact-rich 必须取偏宽。
+      // DLS damping coefficient: λ=0.05 with FR3 σ_min ≈ 0.05-0.1 gives an amplification of 8-10×, letting the N(J)
+      // projection leak 5-10% into the range space of J, so the jlim push-back drags the end effector away. Khatib '95 + the libfranka
+      // examples' standard choice is 0.10-0.20; contact-rich must lean toward the wide side.
       const double dls_lambda = 0.15;
       Eigen::Matrix<double, 6, 6> JJT_damped =
           JJT + (dls_lambda * dls_lambda) * Eigen::Matrix<double, 6, 6>::Identity();
@@ -467,7 +467,7 @@ int main(int argc, char** argv) {
       Eigen::Matrix<double, 7, 7> N_proj =
           Eigen::Matrix<double, 7, 7>::Identity() - J_pinv * jacobian;
 
-      // 关节限位势能 (per-joint，待会儿投影到零空间)
+      // Joint-limit potential (per-joint, projected into the null space below)
       Eigen::Matrix<double, 7, 1> tau_jlim_raw;
       tau_jlim_raw.setZero();
       for (int i = 0; i < 7; ++i) {
@@ -486,15 +486,15 @@ int main(int argc, char** argv) {
           tau_jlim_raw[i] -= jlim_D * qd_i;
         }
       }
-      // 投影到零空间：让 jlim 不打架 task
+      // Project into the null space: keeps jlim from fighting the task
       Eigen::Matrix<double, 7, 1> tau_jlim_ns = N_proj * tau_jlim_raw;
 
       Eigen::Matrix<double, 7, 1> tau_d = tau_task + tau_jlim_ns + coriolis;
 
-      // 每关节绝对 torque clamp（FR3 hardware 限位 J1-4: 87 Nm, J5-7: 12 Nm）
-      // 防 jlim_K=400 在小关节 J5/J6/J7 请求超 12 Nm 触发 joint_torque reflex
+      // Per-joint absolute torque clamp (FR3 hardware limits J1-4: 87 Nm, J5-7: 12 Nm)
+      // Prevents jlim_K=400 from requesting more than 12 Nm on the small joints J5/J6/J7 and triggering a joint_torque reflex
       static const std::array<double, 7> kTauMax = {{87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0}};
-      const double kTauSafeFraction = 0.85;  // 留 15% 安全裕度
+      const double kTauSafeFraction = 0.85;  // keep a 15% safety margin
       for (int i = 0; i < 7; ++i) {
         double cap = kTauMax[i] * kTauSafeFraction;
         if (tau_d[i] > cap) tau_d[i] = cap;
@@ -504,8 +504,8 @@ int main(int argc, char** argv) {
       std::array<double, 7> tau_array;
       Eigen::VectorXd::Map(&tau_array[0], 7) = tau_d;
 
-      // libfranka 自带 torque rate limiter：硬限相邻两帧 dτ/dt
-      // 杜绝 controller_torque_discontinuity 这一族 reflex
+      // libfranka's own torque rate limiter: hard-limits dτ/dt between two adjacent frames
+      // Eliminates the controller_torque_discontinuity family of reflexes
       tau_array = franka::limitRate(franka::kMaxTorqueRate, tau_array, state.tau_J_d);
 
       franka::Torques out(tau_array);
@@ -525,7 +525,7 @@ int main(int argc, char** argv) {
     uint64_t total_reflex = 0;
     while (!g_stop.load()) {
       try {
-        // torque control 默认 mode（不传 ControllerMode 参数）
+        // torque control is the default mode (no ControllerMode argument passed)
         tick_stats.reset_interval();     // PART B: recovery gap is not a missed cycle
         g_recovering.store(false);
         robot.control(control_cb);
@@ -538,7 +538,7 @@ int main(int argc, char** argv) {
                   << retries + 1 << "/" << max_retries << "): " << e.what() << std::endl;
         if (g_stop.load()) break;
         if (++retries > max_retries) {
-          std::cerr << "  max retries 已达，放弃" << std::endl;
+          std::cerr << "  max retries reached, giving up" << std::endl;
           break;
         }
         try {
@@ -560,7 +560,7 @@ int main(int argc, char** argv) {
             std::cerr << "  unfreeze" << std::endl;
           }).detach();
         } catch (const franka::Exception& e2) {
-          std::cerr << "  automaticErrorRecovery 失败: " << e2.what() << std::endl;
+          std::cerr << "  automaticErrorRecovery failed: " << e2.what() << std::endl;
           break;
         }
       }

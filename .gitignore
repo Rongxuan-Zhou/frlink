@@ -14,3 +14,6 @@ results/
 keys/
 # build record written by docker/build-image.sh
 last-build.txt
+
+# per-machine client settings (created by client/install.sh)
+client/config.env
