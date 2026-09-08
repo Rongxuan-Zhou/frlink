@@ -25,6 +25,9 @@ them. The documented use is 6-DOF teleoperation from a WebXR headset with the gr
 
 ## Use this RT host from your own PC
 
+Full guide (principles, code walk-through, session procedure): [`docs/GUIDE.md`](docs/GUIDE.md).
+
+
 1. **Cable.** Plug a straight Ethernet cable from your PC into the host's `frlink0` port (the
    ASIX USB port on the dock, not the built-in RJ45 — that one goes to the robot). No switch.
 2. **Address.** Give your NIC `10.10.0.1/24`, no gateway. The host is `10.10.0.2`; `ping` it.
