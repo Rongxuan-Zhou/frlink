@@ -28,6 +28,19 @@ WebXR needs a secure origin, which is why the server is HTTPS only. Test the lin
 robot first: `$FRANKA_PY teleop/01_webxr_pose_reader.py` prints every callback (pose, buttons)
 and needs nothing from the RT host.
 
+### Operator procedure in the headset
+
+1. **Calibrate the frame: stand directly in front of the robot, facing it, before you press Enter VR.**
+   The WebXR session origin is captured at that moment and every later controller motion is
+   interpreted in that first-person frame ("forward" = towards the robot as seen from that spot).
+2. After calibration you may move around. The mapping stays fixed to the calibrated frame, so you can
+   step to the side or stand behind the arm on the same side and keep operating; the arm still moves in
+   the directions you calibrated, not relative to where you are standing now.
+3. **When you are done, the first thing to do is press "Exit VR" in the web page** (the button on the
+   overlay), then stop the bridge and the servo from the PC. Leaving the session open while the bridge is
+   killed leaves the headset streaming into nothing and confuses the next start.
+4. Hold Trigger to move (dead-man), press Grip to toggle the gripper. Release Trigger before walking.
+
 ## Controller map (`frontend_swapped/`)
 
 | control | function |

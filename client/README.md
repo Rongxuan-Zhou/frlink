@@ -61,8 +61,11 @@ part of this package.
    franka-teleop live               # start the servo on the host, wait for state, start the bridge
    franka-teleop status             # bridge PID, mirror health, host units
    ```
-   Open `https://<your PC>:4443/` on the Quest, Enter VR, hold Trigger to move, press Grip
-   for the gripper. Details, mapping and safety limits: [`teleop/README.md`](teleop/README.md).
+   Open `https://<your PC>:4443/` on the Quest. **Stand directly in front of the robot, facing it,
+   then press Enter VR** - the frame you calibrate there is the one every later motion uses, and you
+   may then move around (even behind the arm on the same side) and keep operating. Hold Trigger to
+   move, press Grip for the gripper. **When you finish, press Exit VR in the web page first**, then
+   `franka-teleop stop`. Details, mapping and safety limits: [`teleop/README.md`](teleop/README.md).
 7. **Record.** In a second terminal, with the teleop running:
    ```
    python3 record/state_reader.py --selftest --secs 3        # ee_ok 60/60
