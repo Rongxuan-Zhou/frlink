@@ -26,6 +26,7 @@ them. The documented use is 6-DOF teleoperation from a WebXR headset with the gr
 ## Use this RT host from your own PC
 
 Full guide (principles, code walk-through, session procedure): [`docs/GUIDE.md`](docs/GUIDE.md).
+The robot's own console, hand guiding and error recovery: [`docs/DESK.md`](docs/DESK.md).
 
 
 1. **Cable.** Plug a straight Ethernet cable from your PC into the host's `frlink0` port (the

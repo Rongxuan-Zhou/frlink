@@ -1,7 +1,7 @@
 # Using the FR3 + RT-host combination from your own computer
 
 This guide is for someone who wants to drive the Franka FR3 that sits behind the dedicated real-time
-host ("the RT host", an Alienware m18 laptop) from **their own Linux PC** -- to teleoperate it with a
+host ("the RT host", an Alienware m18 laptop) from their own Linux PC: to teleoperate it with a
 Meta Quest, to record camera + robot-state episodes, or to write their own controller that sends
 target poses. It explains how the pieces fit (principles), what the core code actually does (logic),
 and the exact steps to run a session. It does not cover provisioning a new RT host; that is
@@ -18,6 +18,7 @@ Contents
 7. [Writing your own sender or consumer](#7-writing-your-own-sender-or-consumer)
 8. [What can go wrong and what it looks like](#8-what-can-go-wrong-and-what-it-looks-like)
 9. [Numbers you can expect](#9-numbers-you-can-expect)
+10. [Software stack and libraries](#10-software-stack-and-libraries)
 
 ---
 
@@ -32,12 +33,13 @@ Contents
 
 Fixed, provided by the lab:
 
-- **FR3 arm with the Franka Hand**, system image 5.7.2, FCI licence. The robot only ever talks to the
-  RT host. Its web console ("Desk", `https://172.16.0.2/desk/`) is reachable from the RT host only.
-- **RT host**: Ubuntu 22.04, kernel 6.8 pinned, CPUs 2-3 isolated for the control thread, the servo runs
+- The FR3 arm with the Franka Hand, system image 5.7.2, FCI licence. The robot only ever talks to the
+  RT host. Its web console ("Desk", `https://172.16.0.2/desk/`) is reachable from the RT host only;
+  how Desk works is in [`DESK.md`](DESK.md).
+- The RT host: Ubuntu 22.04, kernel 6.8 pinned, CPUs 2-3 isolated for the control thread, the servo runs
   inside a Docker image (`franka-rt:0.17.0-jazzy`, libfranka 0.17.0) under systemd. It exposes one
   Ethernet port for exactly one client at a time and an ssh key-only control channel.
-- The **interface contract** between the two machines: [`INTERFACE.md`](INTERFACE.md). It is frozen;
+- The interface contract between the two machines is [`INTERFACE.md`](INTERFACE.md). It is frozen;
   everything in this repository is an implementation of it.
 
 You bring:
@@ -66,11 +68,11 @@ Your PC only has to meet soft deadlines: send a target pose every ~11 ms, read s
 
 | flow | direction | transport | what |
 |---|---|---|---|
-| **A. command** | PC -> host | UDP `10.10.0.2:50001` | one datagram = 128 bytes = 16 float64 (little-endian), column-major 4x4 homogeneous `O_T_EE` target |
-| **B. state** | host -> PC | UDP `10.10.0.1:50002` | `FRST1 <seq> <epoch_ns> <t_real_ns> <t_mono_ns> <name>\n<body>`; body is the text of one state file |
-| **C. control** | PC -> host | ssh forced command | `franka-ctl status / preflight / start pose / stop / restart pose [home] / goto home / gripper ... / echo / comm-test --yes` |
+| A. command | PC -> host | UDP `10.10.0.2:50001` | one datagram = 128 bytes = 16 float64 (little-endian), column-major 4x4 homogeneous `O_T_EE` target |
+| B. state | host -> PC | UDP `10.10.0.1:50002` | `FRST1 <seq> <epoch_ns> <t_real_ns> <t_mono_ns> <name>\n<body>`; body is the text of one state file |
+| C. control | PC -> host | ssh forced command | `franka-ctl status / preflight / start pose / stop / restart pose [home] / goto home / gripper ... / echo / comm-test --yes` |
 
-Flow A is fire-and-forget: no sequence numbers, no acknowledgements. The servo accepts a datagram only
+Flow A has no sequence numbers and no acknowledgements. The servo accepts a datagram only
 if the source IP is in its allow-list (`10.10.0.1`) and the length is exactly 128 bytes, then **latches
 the first (ip, port) that gets through** and drops every other sender until the latched one has been
 silent for 1 s. That is how "one sender at a time" is enforced at the robot end.
@@ -93,28 +95,28 @@ Flow C exists because starting a torque controller must never be possible by acc
 runs the verbs listed above, each takes a file lock on the robot, and every verb that moves the arm
 refuses while a servo is active.
 
-### 2.3 The safety envelope (what the servo does no matter what you send)
+### 2.3 The safety envelope (what the servo does regardless of what you send)
 
-- **200 ms hold**: no accepted command for 200 ms -> the target is snapped to the current pose each
-  tick; the arm stops and stays compliant. Restarting your sender resumes control immediately.
-- **F/T freeze**: |external force| > 35 N or |torque| > 20 Nm -> the target is frozen for 1.5 s and
-  incoming commands are dropped (they count as accepted but do not reach the controller).
-- **Torque cap** 0.85 x [87 87 87 87 12 12 12] Nm, libfranka's own rate limiter, collision reflex
-  thresholds 30 N / 30 Nm set on the robot.
-- **Reflex recovery**: a robot reflex (collision, joint limit, velocity) throws inside `robot.control()`;
-  the servo runs `automaticErrorRecovery`, re-reads the pose, freezes for 2 s and re-enters control,
+- Hold after 200 ms without an accepted command: the target is snapped to the current pose each tick,
+  so the arm stops and stays compliant. Restarting your sender resumes control immediately.
+- Force/torque freeze: when the external force exceeds 35 N or the torque 20 Nm, the target is frozen
+  for 1.5 s and incoming commands are dropped (they count as accepted but do not reach the controller).
+- Torque cap of 0.85 x [87 87 87 87 12 12 12] Nm, libfranka's own rate limiter, and collision reflex
+  thresholds of 30 N / 30 Nm set on the robot.
+- Reflex recovery: a robot reflex (collision, joint limit, velocity) throws inside `robot.control()`.
+  The servo runs `automaticErrorRecovery`, re-reads the pose, freezes for 2 s and re-enters control,
   up to 50 times. Your sender sees `reflex_count` and `recovering` in `franka_link.txt`.
-- **Network guards**: allow-list + latch on 50001; nftables on the host only accepts 50001 from the
+- Network guards: allow-list and latch on port 50001; nftables on the host accepts 50001 only from the
   client port; the servo start is gated by a precheck (host thermal state, RT tuning present, image
   present, no other robot client).
-- **Bridge guards** (client side, `franka-teleop`): workspace box, per-frame step limit 5.5 mm
+- Bridge guards on the client (`franka-teleop`): workspace box, per-frame step limit of 5.5 mm
   (0.5 m/s at 90 Hz), rotation scale 0.5, dead-man trigger.
 
 ### 2.4 Why the client writes files
 
 Every consumer on the client (bridge, recorder, your scripts) reads the robot state from
 `/tmp/franka_*.txt`, not from the network. A small daemon (`franka_state_mirror`) turns flow B into
-those files with atomic rename writes. Consumers judge liveness by **file mtime**: `franka_current_ee.txt`
+those files with atomic rename writes. Consumers judge liveness by file mtime: `franka_current_ee.txt`
 older than 250 ms means "servo dead or link silent". This keeps single-host and two-host setups
 identical for anything that reads state, and lets a consumer be written in ten lines.
 
@@ -130,14 +132,14 @@ must agree to better than 10 ms**. Both machines run NTP; the mirror measures th
 All paths under [`../rt-host/`](../rt-host/). You cannot change any of this as a visitor, but you
 should know what runs when you type a verb.
 
-### 3.1 `bin/franka-ctl` -- the only entry point
+### 3.1 `bin/franka-ctl`: the only entry point
 
 ```
 verb -> [refuse_if_servo] -> [with_robot_lock: flock -n /run/lock/franka-robot.lock] -> action
 ```
 
 - `start pose`: `sudo systemctl start franka-servo@pose` (sudoers allows exactly these units), then
-  waits 2 s and confirms `active`. Exit codes: 0, 64 (bad verb or token -- the forced command
+  waits 2 s and confirms `active`. Exit codes: 0, 64 (bad verb or token; the forced command
   rejects any argument that is not `[A-Za-z0-9._:=-]+`), 75 (busy: lock held or servo active).
 - `stop`: `systemctl stop` -> SIGTERM -> the servo returns `MotionFinished` -> clean exit within ~1 s.
 - `restart pose home`: stop, then the home sequence, then start. The whole thing is atomic under the
@@ -149,7 +151,7 @@ verb -> [refuse_if_servo] -> [with_robot_lock: flock -n /run/lock/franka-robot.l
   channel (port 1338), so it is allowed while the servo runs.
 - `echo`: one JSON robot state; refused while a servo is active (it would steal the FCI channel).
 
-### 3.2 `franka-servo@.service` -- how the servo is started
+### 3.2 `franka-servo@.service`: how the servo is started
 
 `ExecStartPre=bin/franka-servo-precheck` refuses the start if: `/run/franka/rt-tune.ok` is missing
 (the RT tuning did not run), the nftables table is not loaded, AC power is off, the 10 s median package
@@ -165,7 +167,7 @@ docker run --rm --init --privileged --network host --ipc host --ulimit rtprio=99
 
 Log: `/tmp/franka/servo-pose.log` on the host; counters in `/tmp/franka/franka_link.txt`.
 
-### 3.3 `teleop/cartesian_pose_servo.cpp` -- the controller
+### 3.3 `teleop/cartesian_pose_servo.cpp`: the controller
 
 One process, seven threads:
 
@@ -201,7 +203,7 @@ All paths under [`../client/`](../client/). Configuration is one file, `config.e
 `config.env.example`): host address and user, key path, your IP and NIC name, the Python interpreter
 for the bridge. Every script derives the repo root from its own location; nothing is hard-coded.
 
-### 4.1 `bin/franka_state_mirror` -- flow B to files
+### 4.1 `bin/franka_state_mirror`: flow B to files
 
 A stdlib-only Python daemon run by the user unit `franka-state-mirror` (installed by `install.sh`):
 
@@ -225,20 +227,20 @@ once a second: `epoch seq src age_ms skew_ms rx drop_src drop_hdr drop_name drop
 `cmd_drop_size`, `cmd_drop_allow`, `cmd_drop_latch`, `latched_sender`, `missed_cycles_total`,
 `max_consecutive_missed`, `freeze`, `recovering`, `tick_over_1p2ms_1s`, `tick_max_us_1s`, `reflex_count`.
 
-### 4.2 `bin/franka-remote` -- flow C
+### 4.2 `bin/franka-remote`: flow C
 
 `ssh -i $FRANKA_CTL_KEY -o BatchMode=yes -o ConnectTimeout=3 user@host <verb...>` under `timeout`
 (20 s for status/gripper/echo, 45 s start/stop, 120 s goto/restart, 90 s comm-test). Exit codes are
 passed through untouched so callers can branch on 75 (busy) versus 255 (no link) versus 124 (timeout).
 
-### 4.3 `bin/franka-fci-shim` -- the old binary names
+### 4.3 `bin/franka-fci-shim`: the old binary names
 
 `bin/gripper_cmd`, `bin/goto_home`, `bin/echo_robot_state` are symlinks to one script that maps the
 classic argument shape (`gripper_cmd <ip> close`) onto `franka-remote gripper close`. The bridge keeps
 calling `gripper_cmd` exactly as it did when the robot was local; the shim refuses anything the host
 does not offer (custom joint targets) with exit 64 instead of guessing a different motion.
 
-### 4.4 `bin/franka-teleop` -- the orchestrator
+### 4.4 `bin/franka-teleop`: the orchestrator
 
 ```
 live    = servo_start -> wait_state_ready -> bridge_start
@@ -252,7 +254,7 @@ starting a servo it deletes the old `franka_init_pose.txt`, so the bridge can ne
 servo's pose. Workspace box, scale and step limit are parameters at the top of the script
 (`FRANKA_WS_*`, `FRANKA_SCALE_*`, `FRANKA_MAX_STEP` env overrides).
 
-### 4.5 `teleop/02_webxr_to_franka.py` -- the bridge
+### 4.5 `teleop/02_webxr_to_franka.py`: the bridge
 
 - Serves the WebXR page (`frontend_swapped/`) over HTTPS on port 4443 through the `teleop` pip package
   and receives one JSON message per headset frame (~90 Hz): controller position/orientation, `move`
@@ -275,7 +277,7 @@ servo's pose. Workspace box, scale and step limit are parameters at the top of t
 The headset frame is captured at "Enter VR": stand in front of the robot facing it when you press it
 (see 5.4).
 
-### 4.6 `record/` -- episodes to HDF5
+### 4.6 `record/`: episodes to HDF5
 
 - `cameras/grabber.py`: one thread per RealSense camera from `config/cameras.yaml` (serial -> role),
   640x480 @ 30 fps colour (+ aligned depth), auto-exposure locked after convergence, hardware
@@ -323,6 +325,7 @@ franka-client-preflight        # every line PASS or an explained WARN
 ```
 Ask the admin (or do it on the host's screen): Desk -> unlock joints -> **Activate FCI** -> press the
 enabling button. This is required after every robot power cycle; nothing on your PC can do it.
+What each Desk step means, hand guiding and error recovery: [`DESK.md`](DESK.md).
 
 ```
 franka-remote status           # franka-servo@pose inactive, fci link up
@@ -341,7 +344,7 @@ up; the page uses a self-signed certificate, accept it once). Details and the co
 
 1. **Stand directly in front of the robot, facing it, before you press Enter VR.** The WebXR frame is
    captured at that moment; every later hand motion is interpreted in it.
-2. After that you may move around -- to the side or behind the arm on the same side -- and keep
+2. After that you may move around, to the side or behind the arm on the same side, and keep
    operating. The mapping does not rotate with you; the arm still moves in the calibrated directions.
 3. Hold Trigger to move, release it before walking. Press Grip to toggle the gripper.
 4. **When you finish, press Exit VR in the web page first**, then `franka-teleop stop` on the PC.
@@ -369,7 +372,7 @@ when an episode has less than 95 % `ee_ok`.
 
 ## 7. Writing your own sender or consumer
 
-**Sender** (any language; Python shown). Read the current pose, send 128-byte targets at 10-100 Hz,
+Sender (any language; Python shown). Read the current pose, send 128-byte targets at 10-100 Hz,
 never stop sending for more than 200 ms unless you want the arm to hold:
 
 ```python
@@ -387,17 +390,17 @@ steps small: the servo filters and clamps torque but does not clamp your target;
 10 cm jump. Watch `franka_link.txt`: `latched_sender` must be your `ip:port`, `cmd_pkts_last_s` your
 rate, `cmd_drop_allow` must stay 0.
 
-**Consumer**: read the files (simplest) --
+Consumer: read the files (simplest):
 
 ```python
 from record.state_reader import make_state_fn
 state = make_state_fn()          # dict with ee_pose (16,), ee_ok; add with_wrench/with_joints
 ```
 
--- or subscribe to the datagrams yourself by stopping the mirror unit and binding 50002 (only one
+Or subscribe to the datagrams yourself by stopping the mirror unit and binding 50002 (only one
 process can own the port; the mirror is the recommended owner).
 
-**Extending the host** (admin only): a new verb is a new `case` in `franka-ctl`; a new servo mode is a
+Extending the host (admin only): a new verb is a new `case` in `franka-ctl`; a new servo mode is a
 new systemd instance name in `franka-servo-run` plus its sudoers lines. Any change to flow A/B bumps
 `FRST1` to `FRST2` per the contract.
 
@@ -432,3 +435,43 @@ From the acceptance runs of 2026-09-08 ([`ACCEPTANCE.md`](ACCEPTANCE.md)):
 | slow circle tracking (3 cm radius, 9 mm/s) | 8 mm mean error: impedance compliance, not latency (command age 5 ms) |
 | link outage of 10 s | servo unaffected, mirror resumes < 0.2 s after link up |
 | teleop session (Quest, ~90 Hz) | 0 missed cycles; one F/T freeze and one reflex on contact, both self-recovered |
+
+## 10. Software stack and libraries
+
+Everything the two halves depend on, what it is used for, and where it lives. Versions are the ones
+the acceptance runs were done with; the pins are in `client/requirements-*.txt` and
+`rt-host/docker/`.
+
+### RT host
+
+| library | version | role | where |
+|---|---|---|---|
+| libfranka | 0.17.0 (commit `4448c390`, `libfranka-common` `cd38d0ec`) | the FCI client: 1 kHz `robot.control()` torque loop, `Model` for Jacobian/Coriolis, `Gripper` over TCP 1338, `automaticErrorRecovery` | built from source inside the Docker image; the servo, `gripper_cmd`, `echo_robot_state`, `fk_probe` link it |
+| pinocchio | 3.9.0 (`ros-jazzy-pinocchio` from the ROS 2 Jazzy snapshot of 2026-04-13) | rigid-body kinematics and dynamics libfranka's model uses | Docker image; the snapshot is pinned because the live repo moved to pinocchio 4.0 |
+| Eigen | 3.4 | matrices and quaternions in the controller | Docker image |
+| Poco | 1.11 | libfranka's network layer | Docker image |
+| fmt | 9.1 | logging inside libfranka | Docker image |
+| Docker image `franka-rt:0.17.0-jazzy` | Ubuntu 24.04 + the above, gcc 13 | reproducible user space for the servo regardless of the host OS; run with `--privileged --network host --ulimit rtprio=99 --ulimit memlock=-1` | `rt-host/docker/Dockerfile`, `build-image.sh`, `build-inside.sh` |
+| franky (`franky-control`) | 1.1.3, the wheel built against libfranka 0.17.0, Python 3.10 venv on the host | point-to-point motions with libfranka underneath: `franka-ctl goto home` runs `franky_tools/goto_home.py`, which lifts clear of the table and checks the joint path with forward kinematics before moving; also payload calibration and gripper tools | `rt-host/franky_tools/`, run through `rt-host/bin/franka-py`; only while no servo is active |
+| systemd, nftables, NetworkManager, DKMS `r8126` | Ubuntu 22.04 stock | service supervision, the port firewall, the two NIC profiles, the robot NIC driver | `rt-host/host/` |
+
+The servo itself (`teleop/cartesian_pose_servo.cpp` plus the header-only `teleop/rt/`) has no other
+dependency: the UDP, triple-buffer and real-time setup code is plain POSIX.
+
+### Client
+
+| library | version | role | where |
+|---|---|---|---|
+| `teleop` (Spes Robotics) | 0.1.5 | serves the WebXR page over HTTPS and turns the headset's controller pose into a Python callback at the headset frame rate; the swapped frontend in `client/teleop/frontend_swapped/` overrides its UI to give the Trigger/Grip button map | `teleop/02_webxr_to_franka.py` |
+| FastAPI + uvicorn | 0.136.1 / 0.46.0 | the web server underneath `teleop` (port 4443, WebSocket `/ws`) | pulled in by `teleop` |
+| numpy, scipy, transforms3d | 2.4.4 / 1.17.1 / 0.4.2 | 4x4 pose algebra, rotation scaling (`scipy.spatial.transform.Rotation`), quaternion conversions | bridge |
+| Python stdlib only | 3.x | the state mirror, the sender lock, the FRST1 test generator, the preflight helpers | `client/bin/franka_state_mirror`, `client/teleop/franka_sender_lock.py`, `client/tests/fake_frst1.py` |
+| pyrealsense2 | 2.57.7 | Intel RealSense capture with hardware timestamps, exposure lock | `client/record/cameras/grabber.py` |
+| h5py, opencv-python, PyYAML | 3.16.0 / 4.13.0 / 6.0.3 | HDF5 episode files, image handling, `cameras.yaml` | `client/record/` |
+| OpenSSH, NetworkManager, systemd user units | stock | the control channel, the private-link profile, the mirror service | `client/install.sh` |
+
+Two remarks on the choices. libfranka is pinned to 0.17.0 because the robot's system image (5.7.2)
+speaks research-interface version 9, which only libfranka 0.15 to 0.17 implement; upgrading either side
+alone breaks the connection. franky is used for the slow motions and the C++ servo for the fast one on
+purpose: franky's Python API makes the safety checks around a point-to-point move easy to write, while
+the 1 kHz impedance loop needs the compiled controller.
