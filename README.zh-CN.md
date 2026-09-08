@@ -33,7 +33,7 @@
 ## 连接你的 PC
 
 1. 用一根直通网线把你的 PC 接到主机的 `frlink0` 口（扩展坞上的 ASIX USB 网口，不是内置 RJ45，后者接机器人）。不经过交换机。
-2. 给你的网卡设 `10.10.0.1/24`，不设网关。主机是 `10.10.0.2`；`ping` 它。这个地址是固定的：servo 只向一个客户端发布状态，只从一个源接受命令，两者都是 `10.10.0.1`（见 [`rt-host/README.zh-CN.md`](rt-host/README.zh-CN.md#授权新的客户端密钥)）。
+2. 给你的网卡设 `10.10.0.1/24`，不设网关。主机是 `10.10.0.2`；`ping` 它。这个地址是固定的：servo 只向一个客户端发布状态，只从一个源接受命令，两者都是 `10.10.0.1`（见 [`rt-host/README.zh-CN.md`](rt-host/README.zh-CN.md#同一时间只有一个客户端来访-pc-必须是-101001)）。
 3. 生成一对 ed25519 密钥。把公钥交给主机所有者，由他加到主机的 `authorized_keys` 里，并带上 `franka-ctl` forced command 前缀（格式见 `rt-host/README.zh-CN.md`）。测试：`ssh -i <key> rongxuan_zhou@10.10.0.2 status`。
 4. 按 [`client/README.zh-CN.md`](client/README.zh-CN.md) 安装客户端这一半，然后按 [`docs/GUIDE.zh-CN.md`](docs/GUIDE.zh-CN.md) 第 5 节运行一次会话。在这之前的 Desk 步骤（解锁关节、Activate FCI、按下 Enable）在 [`docs/DESK.zh-CN.md`](docs/DESK.zh-CN.md)。
 
