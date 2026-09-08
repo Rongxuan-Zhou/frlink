@@ -4,12 +4,10 @@
 
 几条小规则，由评审执行。
 
-注释、日志字符串、提交信息和文档使用英文。CJK 扫描是评审的一部分：
-`grep -rlP '[\x{4e00}-\x{9fff}]' rt-host client docs` 应该只列出 `rt-host/README.zh-CN.md` 中
-“Known gaps”下仍然点名的文件，而且这个列表只应该越来越短。
-
-文档是双语的：每个 .md 都有一个 .zh-CN.md 孪生文件，第一行是语言切换行；两边要保持同步。代码注释、
-docstring 和日志字符串只用英文。
+代码注释、docstring、日志字符串和提交信息只用英文。文档是双语的：每个 `.md` 都有一个 `.zh-CN.md`
+孪生文件，第一行是语言切换行，两边要保持同步。CJK 扫描是评审的一部分：
+`grep -rlP '[\x{4e00}-\x{9fff}]' --exclude='*.zh-CN.md' rt-host client docs` 应该只列出
+`rt-host/README.zh-CN.md` 中“Known gaps”下仍然点名的文件，而且这个列表只应该越来越短。
 
 新代码中不要出现绝对的家目录路径。用变量（`FRANKA_ROOT`、`$HOME`、`$(dirname "$0")`）代替
 `/home/<user>/...`。现有的 `rt-host/` 脚本仍带有 `/home/rongxuan_zhou/franka`，已列为已知缺口；不要

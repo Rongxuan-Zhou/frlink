@@ -4,12 +4,11 @@ English | [中文](CONTRIBUTING.zh-CN.md)
 
 Small rules, enforced by review.
 
-Comments, log strings, commit messages and docs are in English. A CJK scan is part of review:
-`grep -rlP '[\x{4e00}-\x{9fff}]' rt-host client docs` should list only the files still named
-under "Known gaps" in `rt-host/README.md`, and that list should only ever shrink.
-
-Documentation is bilingual: every .md has a .zh-CN.md twin and a language toggle on its first
-line; keep both in sync. Code comments, docstrings and log strings stay English only.
+Code comments, docstrings, log strings and commit messages are English only. Documentation is
+bilingual: every `.md` has a `.zh-CN.md` twin and a language toggle on its first line; keep both
+in sync. A CJK scan is part of review: `grep -rlP '[\x{4e00}-\x{9fff}]' --exclude='*.zh-CN.md'
+rt-host client docs` should list only the files still named under "Known gaps" in
+`rt-host/README.md`, and that list should only ever shrink.
 
 No absolute home paths in new code. Use a variable (`FRANKA_ROOT`, `$HOME`,
 `$(dirname "$0")`) instead of `/home/<user>/...`. The existing `rt-host/` scripts still carry
