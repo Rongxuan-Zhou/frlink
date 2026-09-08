@@ -1,0 +1,6 @@
+// Franka RT host: never auto-upgrade kernel / nvidia / r8126 (kernel change => DKMS rebuild + GRUB default drift)
+Unattended-Upgrade::Package-Blacklist {
+    "linux-";
+    "nvidia-";
+    "r8126";
+};

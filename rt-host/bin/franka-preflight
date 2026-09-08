@@ -1,0 +1,35 @@
+#!/bin/bash
+# franka-preflight — PASS/FAIL/WARN table for the RT host; exit non-zero on any FAIL. Robot checks are WARN when the robot is off.
+set -u; f=0
+P(){ echo "PASS  $1"; }; F(){ echo "FAIL  $1"; f=$((f+1)); }; W(){ echo "WARN  $1"; }
+IMAGE=${FRANKA_IMAGE:-franka-rt:0.17.0-jazzy}
+grep -qw 'isolcpus=domain,managed_irq,2,3' /proc/cmdline && P "cmdline isolcpus 2,3" || F "cmdline lacks isolcpus=domain,managed_irq,2,3"
+[ "$(cat /sys/devices/system/cpu/isolated)" = 2-3 ] && P "isolated cpus 2-3" || F "isolated='$(cat /sys/devices/system/cpu/isolated)'"
+[ "$(cat /sys/devices/system/cpu/nohz_full)" = 2-3 ] && P "nohz_full 2-3" || F "nohz_full='$(cat /sys/devices/system/cpu/nohz_full)'"
+[ "$(uname -r)" = 6.8.0-124-generic ] && P "kernel 6.8.0-124-generic" || F "kernel $(uname -r) (expected 6.8.0-124-generic)"
+[ "$(ulimit -Hr)" = 99 ] && P "rtprio limit 99" || F "ulimit -Hr = $(ulimit -Hr)"
+[ -f /run/franka/rt-tune.ok ] && P "rt-tune.ok $(head -c 40 /run/franka/rt-tune.txt 2>/dev/null)" || F "rt-tune.ok missing"
+systemctl is-active --quiet irqbalance && F "irqbalance active" || P "irqbalance inactive"
+[ "$(basename "$(readlink /sys/class/net/enp110s0/device/driver 2>/dev/null)")" = r8126 ] && P "enp110s0 driver r8126" || F "enp110s0 not bound to r8126"
+dkms status 2>/dev/null | grep -qE "^r8126/.*$(uname -r).*installed" && P "dkms r8126 for $(uname -r)" || F "dkms r8126 not installed for $(uname -r)"
+dkms status 2>/dev/null | grep -qE "^nvidia/.*$(uname -r).*installed" && P "dkms nvidia for $(uname -r)" || W "dkms nvidia not installed for $(uname -r)"
+[ "$(cat /sys/class/net/enp110s0/operstate 2>/dev/null)" = up ] && P "enp110s0 link up $(cat /sys/class/net/enp110s0/speed 2>/dev/null)Mb" || W "enp110s0 link down (robot off / cable?)"
+ip -4 addr show dev enp110s0 2>/dev/null | grep -q 'inet 172.16.0.1/' && P "enp110s0 172.16.0.1/24" || F "franka-fci profile not active on enp110s0"
+bad=0; for n in $(awk '$NF ~ /^enp110s0(-[0-9]+)?$/ {sub(":","",$1); print $1}' /proc/interrupts); do [ "$(cat /proc/irq/$n/smp_affinity_list)" = 3 ] || bad=$((bad+1)); done
+[ "$bad" = 0 ] && P "enp110s0 IRQs on cpu3" || F "$bad enp110s0 IRQs not on cpu3"
+if ping -c 3 -i 0.2 -W 1 172.16.0.2 >/tmp/franka/.ping 2>&1; then mx=$(grep -o 'rtt.*' /tmp/franka/.ping | cut -d/ -f6); P "robot 172.16.0.2 reachable max=${mx}ms"; awk -v m="$mx" 'BEGIN{exit !(m<1.0)}' || W "robot ping max ${mx} ms >= 1 ms"; else W "robot 172.16.0.2 not reachable (off / FCI cable?)"; fi
+if [ -d /sys/class/net/frlink0 ]; then ip -4 addr show dev frlink0 | grep -q 'inet 10.10.0.2/' && P "frlink0 10.10.0.2/24" || F "frlink0 present but franka-link not active"
+     ping -c 2 -W 1 10.10.0.1 >/dev/null 2>&1 && P "rog 10.10.0.1 reachable" || W "rog 10.10.0.1 not reachable"
+else W "frlink0 absent (ASIX USB port 00:0a:cd:48:1e:dd not present) — remote clients cannot reach the servo"; fi
+[ "$(cat /sys/class/power_supply/AC/online 2>/dev/null)" = 1 ] && P "AC online" || F "AC power not online"
+[ "$(systemctl is-enabled sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null | sort -u)" = masked ] && P "sleep targets masked" || F "sleep targets not masked"
+t=$(/home/rongxuan_zhou/franka/host/franka-thermal-guard.sh --print); [ "$t" -lt 85 ] && P "package temp ${t}C" || F "package temp ${t}C >= 85C"
+[ "$(apt-mark showhold | wc -l)" -ge 9 ] && P "apt holds $(apt-mark showhold | wc -l)" || F "apt holds missing"
+docker image inspect "$IMAGE" >/dev/null 2>&1 && P "image $IMAGE" || F "image $IMAGE missing"
+[ -x /home/rongxuan_zhou/franka/teleop/cartesian_pose_servo_pusht ] && P "servo binaries built" || F "teleop binaries not built"
+systemctl is-active --quiet nftables && P "nftables.service active" || F "nftables.service not active (sudo systemctl enable --now nftables)"
+sudo -n nft list table inet franka >/dev/null 2>&1 && P "nftables inet franka loaded" || W "nftables state not verifiable without sudo -n (run: sudo nft list table inet franka)"
+stray=$(docker ps --format '{{.Names}}' | grep -E '^franka-' | tr '\n' ' '); [ -z "$stray" ] && P "no franka containers running" || W "running: $stray"
+pgrep -f 'cartesian_pose_servo|goto_home|goto_pose_pusht|echo_robot_state|communication_test' >/dev/null && W "stray libfranka process on host: $(pgrep -af 'cartesian_pose_servo|goto_|echo_robot_state|communication_test' | head -3)" || P "no stray libfranka process"
+timedatectl show -p NTPSynchronized --value | grep -q yes && P "clock NTP synchronized" || W "clock not NTP synchronized"
+echo; [ $f = 0 ] && { echo "PREFLIGHT PASS"; exit 0; } || { echo "PREFLIGHT FAIL ($f)"; exit 1; }

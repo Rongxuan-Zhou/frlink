@@ -1,0 +1,12 @@
+[Unit]
+Description=Franka: DOCKER-USER DROP rules for enp110s0/frlink0 (no container forwarding via robot or rog link)
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/rongxuan_zhou/franka/host/franka-docker-user.sh
+
+[Install]
+WantedBy=docker.service

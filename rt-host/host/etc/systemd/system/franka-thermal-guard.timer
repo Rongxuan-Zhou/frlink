@@ -1,0 +1,10 @@
+[Unit]
+Description=Franka thermal guard (1 Hz)
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=1s
+AccuracySec=100ms
+
+[Install]
+WantedBy=timers.target

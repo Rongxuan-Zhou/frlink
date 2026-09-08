@@ -1,0 +1,17 @@
+#!/bin/bash
+# franka-servo-run <pusht|pose> — exec the torque-servo container (ExecStart of franka-servo@.service, under systemd-inhibit).
+set -euo pipefail
+mode=${1:?usage: franka-servo-run <pusht|pose>}
+case "$mode" in
+  pusht) bin=/franka/teleop/cartesian_pose_servo_pusht; args=${FRANKA_PUSHT_ARGS-"--load-mass 0.0 --kz 6000 --klock-rot 150 --null-kp 20 --null-kd 1.0"};;
+  pose)  bin=/franka/teleop/cartesian_pose_servo;       args=${FRANKA_POSE_ARGS-""};;
+  *) echo "franka-servo-run: unknown mode '$mode'" >&2; exit 64;;
+esac
+export FRANKA_CONTAINER_NAME="franka-servo-$mode"
+export FRANKA_IMAGE="${FRANKA_IMAGE:-franka-rt:0.17.0-jazzy}"
+echo "franka-servo-run: $(date -Is) mode=$mode bin=$bin args=[$args] bind=${FRANKA_CMD_BIND:-10.10.0.2} allow=${FRANKA_CMD_ALLOW:-10.10.0.1} state-dst=${FRANKA_STATE_DST:-10.10.0.1:50002} rt-cpu=${FRANKA_RT_CPU:-2} aux=${FRANKA_AUX_CPUS:-4-15}" >&2
+# shellcheck disable=SC2086
+exec /home/rongxuan_zhou/franka/bin/franka-run "$bin" "${FRANKA_ROBOT_IP:-172.16.0.2}" $args \
+  --cmd-bind "${FRANKA_CMD_BIND:-10.10.0.2}" --cmd-allow "${FRANKA_CMD_ALLOW:-10.10.0.1}" \
+  --state-dst "${FRANKA_STATE_DST:-10.10.0.1:50002}" --rt-cpu "${FRANKA_RT_CPU:-2}" \
+  --aux-cpus "${FRANKA_AUX_CPUS:-4-15}" --state-files "${FRANKA_STATE_FILES:-1}" --state-dir /tmp/franka

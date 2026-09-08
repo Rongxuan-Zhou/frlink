@@ -1,0 +1,9 @@
+[Unit]
+# Fired at 1 Hz by the timer: disable the default 5-starts-per-10-s rate limit, otherwise the
+# sample skips and /run/franka/temp_c goes stale (status showed 100C while sensors read 71C).
+StartLimitIntervalSec=0
+Description=Franka thermal guard sample (hottest coretemp -> /run/franka/temp_c)
+
+[Service]
+Type=oneshot
+ExecStart=/home/rongxuan_zhou/franka/host/franka-thermal-guard.sh

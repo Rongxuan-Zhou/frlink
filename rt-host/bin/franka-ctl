@@ -1,0 +1,69 @@
+#!/bin/bash
+# franka-ctl — the ONLY control entry point for the FR3 RT host (local CLI and ssh forced command).
+# Verbs: status | preflight | start <pusht|pose> | stop | restart <pusht|pose> [home] | goto <home|pusht>
+#        | gripper <open|close|homing|read|width W|grasp W> [--speed V] [--force F] | echo | comm-test --yes
+# Exit: program exit code passed through; 64 usage/refused; 75 busy (lock held / servo active).
+set -u
+ROOT=/home/rongxuan_zhou/franka
+RUN=$ROOT/bin/franka-run
+ROBOT_IP=${FRANKA_ROBOT_IP:-172.16.0.2}
+LOCK_ROBOT=/run/lock/franka-robot.lock
+LOCK_GRIP=/run/lock/franka-gripper.lock
+# ---- argv: from ssh forced command or from the local command line
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  set -f
+  # shellcheck disable=SC2206
+  ARGS=($SSH_ORIGINAL_COMMAND)
+  for a in "${ARGS[@]}"; do [[ "$a" =~ ^[A-Za-z0-9._:=-]+$ ]] || { echo "franka-ctl: refused token '$a'" >&2; exit 64; }; done
+  set -- "${ARGS[@]}"
+fi
+verb=${1:-}; shift || true
+usage(){ sed -n '2,5p' "$0" | sed 's/^# \?//' >&2; exit 64; }
+servo_active(){ systemctl is-active --quiet franka-servo@pusht || systemctl is-active --quiet franka-servo@pose; }
+refuse_if_servo(){ if servo_active; then echo "franka-ctl: refused — a franka-servo@* unit is active (stop it first)" >&2; exit 75; fi; }
+with_robot_lock(){ exec 9>"$LOCK_ROBOT"; flock -n 9 || { echo "franka-ctl: robot busy (lock $LOCK_ROBOT held)" >&2; exit 75; }; }
+oneshot(){ local name=$1; shift; FRANKA_CONTAINER_NAME="$name" "$RUN" "$@"; }
+goto_seq(){ # $1 = home|pusht ; returns first failing exit code
+  case "$1" in
+    home)  oneshot franka-goto /franka/teleop/goto_home "$ROBOT_IP" --speed 0.10 ;;
+    pusht) oneshot franka-goto /franka/teleop/goto_pose_pusht "$ROBOT_IP" --x 0.50 --y 0.00 --z 0.35 --speed 0.04 || return $?
+           oneshot franka-goto /franka/teleop/goto_home "$ROBOT_IP" --q 2.191 0.6 -1.33 -2.0 1.30 2.02 0.08 --speed 0.04 || return $?
+           oneshot franka-goto /franka/teleop/goto_home "$ROBOT_IP" --q 2.191 1.1 -1.33 -2.22 1.30 2.02 0.08 --speed 0.04 || return $?
+           oneshot franka-goto /franka/teleop/goto_pose_pusht "$ROBOT_IP" --x 0.50 --y 0.00 --z 0.098 --speed 0.03 ;;
+    *) echo "franka-ctl: goto target must be home|pusht" >&2; return 64 ;;
+  esac
+}
+mode_ok(){ case "${1:-}" in pusht|pose) return 0;; *) echo "franka-ctl: mode must be pusht|pose" >&2; exit 64;; esac; }
+case "$verb" in
+  status)
+    echo "== units";   for m in pusht pose; do printf '  franka-servo@%-5s %s\n' "$m" "$(systemctl is-active franka-servo@$m)"; done
+    echo "  franka-rt-tune $(systemctl is-active franka-rt-tune)  rt-tune.ok=$([ -f /run/franka/rt-tune.ok ] && echo yes || echo NO)"
+    echo "== containers"; docker ps --format '  {{.Names}} {{.Status}}' | grep franka- || echo "  (none)"
+    echo "== links";  printf '  fci  enp110s0 %s %s\n' "$(cat /sys/class/net/enp110s0/operstate 2>/dev/null)" "$(ip -4 -br addr show enp110s0 2>/dev/null | awk '{print $3}')"
+                      printf '  rog  frlink0  %s %s\n' "$(cat /sys/class/net/frlink0/operstate 2>/dev/null || echo absent)" "$(ip -4 -br addr show frlink0 2>/dev/null | awk '{print $3}')"
+    echo "== host   temp=$(cat /run/franka/temp_c 2>/dev/null || echo ?)C ac=$(cat /sys/class/power_supply/AC/online 2>/dev/null) isolated=$(cat /sys/devices/system/cpu/isolated)"
+    echo "== link";   cat /tmp/franka/franka_link.txt 2>/dev/null || echo "  (no franka_link.txt)"
+    echo "== log";    for m in pusht pose; do [ -f /tmp/franka/servo-$m.log ] && { echo "  -- servo-$m.log"; tail -n 5 /tmp/franka/servo-$m.log | sed 's/^/  /'; }; done
+    exit 0 ;;
+  preflight) exec "$ROOT/bin/franka-preflight" ;;
+  start)   mode_ok "${1:-}"; with_robot_lock; sudo -n systemctl reset-failed "franka-servo@$1" 2>/dev/null; sudo -n systemctl start "franka-servo@$1"; rc=$?
+           sleep 2; systemctl is-active --quiet "franka-servo@$1" && echo "franka-ctl: franka-servo@$1 active" || { echo "franka-ctl: start failed:" >&2; journalctl -u "franka-servo@$1" -n 8 --no-pager >&2; exit ${rc:-1}; }; exit 0 ;;
+  stop)    rc=0; for m in pusht pose; do systemctl is-active --quiet "franka-servo@$m" && { sudo -n systemctl stop "franka-servo@$m" || rc=$?; echo "franka-ctl: stopped franka-servo@$m"; }; done; exit $rc ;;
+  restart) mode_ok "${1:-}"; m=$1; with_robot_lock
+           for x in pusht pose; do systemctl is-active --quiet "franka-servo@$x" && sudo -n systemctl stop "franka-servo@$x"; done
+             if [ "${2:-}" = home ]; then tgt=home; [ "$m" = pusht ] && tgt=pusht   # mode -> its home sequence (pose -> factory home, pusht -> 4-step)
+               goto_seq "$tgt" || { echo "franka-ctl: home sequence failed ($?) — servo NOT restarted" >&2; exit 1; }; fi
+           sudo -n systemctl reset-failed "franka-servo@$m" 2>/dev/null; sudo -n systemctl start "franka-servo@$m" || exit $?
+           sleep 2; systemctl is-active --quiet "franka-servo@$m" && echo "franka-ctl: franka-servo@$m active" || { journalctl -u "franka-servo@$m" -n 8 --no-pager >&2; exit 1; }; exit 0 ;;
+  goto)    refuse_if_servo; with_robot_lock; goto_seq "${1:-}"; exit $? ;;
+  gripper) exec 8>"$LOCK_GRIP"; flock -w 30 8 || { echo "franka-ctl: gripper busy" >&2; exit 75; }
+           oneshot franka-gripper /franka/teleop/gripper_cmd "$ROBOT_IP" "$@"; exit $? ;;
+  echo)    refuse_if_servo; with_robot_lock
+           out=$(oneshot franka-echo /franka/local/bin/echo_robot_state "$ROBOT_IP" 2>&1 | head -n 1)
+           if [[ "$out" == \{* ]]; then echo "$out"; exit 0; else echo "franka-ctl: echo failed: $out" >&2; exit 2; fi ;;
+  comm-test)
+           [ "${1:-}" = --yes ] || { echo "franka-ctl: comm-test MOVES THE ARM to factory-ready (speed 0.5) then runs 10 s zero-torque; re-run with --yes" >&2; exit 64; }
+           refuse_if_servo; with_robot_lock; printf '\n' | oneshot franka-commtest /franka/teleop/communication_test_kignore "$ROBOT_IP"; exit "${PIPESTATUS[1]}" ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "franka-ctl: unknown verb '$verb'" >&2; usage ;;
+esac

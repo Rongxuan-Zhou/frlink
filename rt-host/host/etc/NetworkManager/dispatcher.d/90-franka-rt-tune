@@ -1,0 +1,4 @@
+#!/bin/bash
+# NetworkManager dispatcher: re-run RT tuning whenever the robot NIC comes up (r8126 re-requests its IRQ vectors on open).
+if [ "$1" = "enp110s0" ] && [ "$2" = "up" ]; then systemctl restart --no-block franka-rt-tune.service; fi
+exit 0

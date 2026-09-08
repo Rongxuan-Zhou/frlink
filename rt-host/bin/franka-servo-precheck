@@ -1,0 +1,22 @@
+#!/bin/bash
+# franka-servo-precheck <pusht|pose> — ExecStartPre gate for franka-servo@.service (root). Any failure blocks the start.
+# NO robot motion here (goto sequences belong to franka-ctl goto / restart ... home).
+set -u
+mode=${1:-}
+fail(){ echo "franka-servo-precheck[$mode]: FAIL: $*" >&2; exit 1; }
+IMAGE=${FRANKA_IMAGE:-franka-rt:0.17.0-jazzy}
+BIND=${FRANKA_CMD_BIND:-10.10.0.2}
+case "$mode" in pusht) bin=cartesian_pose_servo_pusht;; pose) bin=cartesian_pose_servo;; *) fail "mode must be pusht|pose";; esac
+mkdir -p /tmp/franka /run/franka; chmod 1777 /tmp/franka
+[ -f /run/franka/rt-tune.ok ] || fail "/run/franka/rt-tune.ok missing (journalctl -u franka-rt-tune -n 30)"
+nft list table inet franka >/dev/null 2>&1 || fail "nftables table inet franka not loaded (sudo systemctl enable --now nftables)"
+for i in enp110s0 frlink0; do [ -d /sys/class/net/$i ] && { echo 0 > /proc/sys/net/ipv4/conf/$i/forwarding || fail "cannot clear forwarding on $i"; }; done
+[ "$(cat /sys/class/power_supply/AC/online 2>/dev/null)" = 1 ] || fail "AC power not online"
+t=$(/home/rongxuan_zhou/franka/host/franka-thermal-guard.sh --print); [ "$t" -lt 85 ] || fail "package temp ${t}C >= 85C"
+for m in pusht pose; do [ "$m" = "$mode" ] && continue; systemctl is-active --quiet "franka-servo@$m" && fail "franka-servo@$m is active"; done
+busy=$(docker ps --format '{{.Names}}' | grep -E '^franka-(servo|goto|echo|commtest|stub)' | tr '\n' ' '); [ -z "$busy" ] || fail "robot busy: $busy"
+ip -4 addr | grep -q "inet $BIND/" || fail "command bind address $BIND is not configured on any interface (frlink0/franka-link down?)"
+ip -4 addr show dev enp110s0 2>/dev/null | grep -q 'inet 172.16.0.1/' || fail "enp110s0 has no 172.16.0.1 (robot link down / franka-fci inactive)"
+docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE missing (docker/build-image.sh)"
+[ -x /home/rongxuan_zhou/franka/teleop/$bin ] || fail "/home/rongxuan_zhou/franka/teleop/$bin not built (docker/build-inside.sh)"
+echo "franka-servo-precheck[$mode]: OK temp=${t}C bind=$BIND" >&2

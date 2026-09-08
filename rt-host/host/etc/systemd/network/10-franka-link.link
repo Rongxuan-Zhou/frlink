@@ -1,0 +1,10 @@
+# Control-plane link to rog (non-realtime): ASIX AX88179A gigabit port on the USB dock,
+# cabled directly to rog eno1 (10.10.0.0/24). Matched by MAC because the dock exposes two
+# identical ports; the other port stays a campus uplink. Driver is ax88179_178a via
+# udev/rules.d/80-franka-ax88179.rules (USB configuration 1), not cdc_ncm.
+# Fixed name frlink0 is referenced by nftables.conf, servo.env, franka-rt-tune.sh and preflight.
+[Match]
+MACAddress=00:0a:cd:48:1e:dd
+
+[Link]
+Name=frlink0

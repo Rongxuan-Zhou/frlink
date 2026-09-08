@@ -1,0 +1,25 @@
+[Unit]
+Description=Franka FR3 torque servo (%i) in the franka-rt container
+Documentation=file:///home/rongxuan_zhou/franka/docs/RUNBOOK.md
+Requires=docker.service
+After=docker.service network-online.target nftables.service franka-rt-tune.service
+Wants=network-online.target franka-rt-tune.service
+# Mutual exclusion between instances is enforced in ExecStartPre (a template cannot Conflicts= with itself).
+
+[Service]
+Type=exec
+EnvironmentFile=-/etc/franka/servo.env
+ExecStartPre=/home/rongxuan_zhou/franka/bin/franka-servo-precheck %i
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle:handle-lid-switch --who=franka-servo-%i --why="FR3 torque servo running" --mode=block /home/rongxuan_zhou/franka/bin/franka-servo-run %i
+ExecStop=-/usr/bin/docker stop -t 5 franka-servo-%i
+ExecStopPost=-/usr/bin/docker rm -f franka-servo-%i
+Restart=no
+KillMode=mixed
+TimeoutStartSec=60
+TimeoutStopSec=10
+StandardOutput=append:/tmp/franka/servo-%i.log
+StandardError=journal
+SyslogIdentifier=franka-servo-%i
+
+[Install]
+# intentionally not enabled at boot: start only via franka-ctl start <pusht|pose>

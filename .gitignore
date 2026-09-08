@@ -1,0 +1,16 @@
+# compiled binaries (the build writes ELF targets next to their sources)
+*.local
+*.o
+# python
+__pycache__/
+*.pyc
+.venv*/
+# datasets, checkpoints, recordings
+*.h5
+*.pt
+data/
+results/
+# private key material (never committed; the host keeps its own copy outside this tree)
+keys/
+# build record written by docker/build-image.sh
+last-build.txt

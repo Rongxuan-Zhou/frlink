@@ -1,0 +1,6 @@
+#!/bin/bash
+# franka-py <script.py> [args] — run a franky_tools script with the self-contained franky venv (host-native, needs rtprio 99 via realtime group).
+# Refuses while a servo unit is active (FCI allows one control client).
+set -euo pipefail
+if systemctl is-active --quiet franka-servo@pusht || systemctl is-active --quiet franka-servo@pose; then echo "franka-py: refused — franka-servo@* active" >&2; exit 75; fi
+exec /home/rongxuan_zhou/franka/.venv_franky/bin/python "$@"

@@ -1,0 +1,22 @@
+#!/bin/bash
+# franka-run <program> [args...] — run a program inside the franka-rt image with the RT-capable container config
+# (franka_ros2-style: host network+ipc, privileged, rtprio 99, memlock unlimited, SYS_NICE, tini init;
+#  ~/franka -> /franka, /tmp/franka -> /tmp/franka).
+# Env: FRANKA_IMAGE (default franka-rt:0.17.0-jazzy), FRANKA_CONTAINER_NAME (docker --name and journald tag),
+#      FRANKA_RUN_AS_USER=1 (run as the calling uid:gid; used for builds), FRANKA_RUN_EXTRA (extra docker args).
+set -euo pipefail
+IMAGE="${FRANKA_IMAGE:-franka-rt:0.17.0-jazzy}"
+NAME="${FRANKA_CONTAINER_NAME:-franka-run-$$}"
+opts=(--rm --init --name "$NAME" -i)
+if [ -t 0 ] && [ -t 1 ]; then opts+=(-t); fi
+if [ "${FRANKA_RUN_AS_USER:-0}" = 1 ]; then opts+=(--user "$(id -u):$(id -g)"); fi
+mkdir -p /tmp/franka 2>/dev/null || true
+# shellcheck disable=SC2086
+exec docker run "${opts[@]}" \
+  --privileged --network host --ipc host \
+  --ulimit rtprio=99 --ulimit memlock=-1:-1 --cap-add SYS_NICE \
+  -v /home/rongxuan_zhou/franka:/franka -v /tmp/franka:/tmp/franka \
+  -e HOME=/tmp -e FRANKA_STATE_DIR=/tmp/franka \
+  --log-driver journald --log-opt tag="$NAME" \
+  ${FRANKA_RUN_EXTRA:-} \
+  "$IMAGE" "$@"

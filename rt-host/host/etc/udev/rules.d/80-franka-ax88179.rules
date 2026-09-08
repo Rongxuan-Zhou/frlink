@@ -1,0 +1,4 @@
+# ASIX AX88179A USB gigabit ports (rog control-plane link frlink0): select USB configuration 1
+# (vendor-specific) so the in-tree ax88179_178a driver binds instead of cdc_ncm (configuration 2).
+# Measured on the direct cable to rog eno1: RTT 1.48 ms avg with cdc_ncm -> 0.32 ms with ax88179_178a.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0b95", ATTR{idProduct}=="1790", ATTR{bConfigurationValue}="1"

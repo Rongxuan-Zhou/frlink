@@ -1,0 +1,14 @@
+[Unit]
+Description=Franka FR3 realtime host tuning (cpu2/3 governor+cpuidle, enp110s0 IRQ pinning, ethtool, forwarding off)
+Documentation=file:///home/rongxuan_zhou/franka/docs/RUNBOOK.md
+After=network-online.target NetworkManager.service sys-subsystem-net-devices-enp110s0.device docker.service
+Wants=network-online.target sys-subsystem-net-devices-enp110s0.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/rongxuan_zhou/franka/host/franka-rt-tune.sh
+SyslogIdentifier=franka-rt-tune
+
+[Install]
+WantedBy=multi-user.target

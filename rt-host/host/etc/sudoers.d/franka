@@ -1,0 +1,2 @@
+# franka-ctl: the operator (and rog via the forced-command key) may only start/stop the servo units without a password.
+rongxuan_zhou ALL=(root) NOPASSWD: /usr/bin/systemctl start franka-servo@pusht, /usr/bin/systemctl start franka-servo@pose, /usr/bin/systemctl stop franka-servo@pusht, /usr/bin/systemctl stop franka-servo@pose, /usr/bin/systemctl reset-failed franka-servo@pusht, /usr/bin/systemctl reset-failed franka-servo@pose
