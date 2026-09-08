@@ -101,4 +101,4 @@ client/                   client half (state mirror, franka-remote, preflight, b
 
 ## License
 
-License: to be chosen by the author.
+MIT, see [`LICENSE`](LICENSE). libfranka (Apache-2.0) and the other dependencies keep their own licenses.
