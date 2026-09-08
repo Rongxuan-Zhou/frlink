@@ -1,3 +1,5 @@
+English | [中文](INTERFACE.zh-CN.md)
+
 # FR3 two-host interface contract
 Frozen 2026-09-02; any change bumps FRST1→FRST2 and the cmd_allow set.
 2026-09-08: task-specific variants removed from this public copy; the interface itself is unchanged.

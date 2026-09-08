@@ -1,3 +1,5 @@
+English | [中文](ARCHITECTURE.zh-CN.md)
+
 # Architecture reference
 
 The reasoning behind the split, the code walk-through and the session procedure are in

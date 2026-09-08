@@ -1,3 +1,5 @@
+English | [中文](ACCEPTANCE.zh-CN.md)
+
 # Acceptance
 
 Two robot days. Day 1 drives the arm from the RT host alone, with a test sender standing in for
