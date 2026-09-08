@@ -1,4 +1,4 @@
-# franka-two-host
+# frlink
 
 A two-machine setup for a Franka FR3 with the Franka Hand: a small, pinned real-time host
 owns the robot and runs the 1 kHz Cartesian impedance servo in a container on an isolated CPU;

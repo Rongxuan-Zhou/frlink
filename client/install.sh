@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh -- set up this PC as a franka-two-host client. Idempotent: run it again after editing
+# install.sh -- set up this PC as a frlink client. Idempotent: run it again after editing
 # config.env. It never needs root; the two privileged steps (NIC profile, linger) are printed.
 #
 #   1. symlink bin/ into ~/.local/bin
@@ -51,7 +51,7 @@ touch "$CFG"; chmod 600 "$CFG"
 python3 - "$CFG" "$ALIAS" "$FRANKA_SERVO_HOST" "$FRANKA_CTL_USER" "$KEY" <<'EOF'
 import re, sys
 cfg, alias, host, user, key = sys.argv[1:]
-block = f"""# >>> franka-two-host client (managed by install.sh) >>>
+block = f"""# >>> frlink client (managed by install.sh) >>>
 Host {alias}
     HostName {host}
     User {user}
@@ -59,10 +59,10 @@ Host {alias}
     IdentitiesOnly yes
     BatchMode yes
     ConnectTimeout 3
-# <<< franka-two-host client <<<
+# <<< frlink client <<<
 """
 text = open(cfg).read()
-pat = re.compile(r"# >>> franka-two-host client.*?# <<< franka-two-host client <<<\n", re.S)
+pat = re.compile(r"# >>> frlink client.*?# <<< frlink client <<<\n", re.S)
 new = pat.sub(block, text) if pat.search(text) else (text + ("\n" if text and not text.endswith("\n") else "") + block)
 if new != text:
     open(cfg, "w").write(new)
