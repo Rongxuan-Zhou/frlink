@@ -1,3 +1,5 @@
+English | [中文](README.zh-CN.md)
+
 # Episode recording
 
 `record_episodes.py` writes RealSense frames plus the robot state from `/tmp/franka_*.txt`

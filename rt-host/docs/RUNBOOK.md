@@ -1,3 +1,5 @@
+English | [中文](RUNBOOK.zh-CN.md)
+
 # FR3 on alienware: runbook
 
 Checklists and failure table for the RT host. Verbs: [`../README.md`](../README.md#franka-ctl-verbs).

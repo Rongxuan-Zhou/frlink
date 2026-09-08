@@ -1,3 +1,5 @@
+English | [中文](README.zh-CN.md)
+
 # rt-host: the dedicated real-time host for the Franka FR3
 
 Export of the RT host repository (`~/franka` on `alienware`). The host owns the robot: it

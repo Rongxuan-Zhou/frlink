@@ -1,3 +1,5 @@
+English | [中文](README.zh-CN.md)
+
 # client: teleoperate and record a Franka FR3 through the RT host
 
 What a visiting Linux PC needs to use the FR3 behind the RT host in

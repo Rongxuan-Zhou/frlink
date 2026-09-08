@@ -1,3 +1,5 @@
+English | [中文](README.zh-CN.md)
+
 # Quest / WebXR teleoperation
 
 `bin/franka-teleop live` starts the pose servo on the RT host, then `02_webxr_to_franka.py`
