@@ -1,16 +1,18 @@
-# Architecture
+# Architecture reference
+
+The reasoning behind the split, the code walk-through and the session procedure are in
+[`GUIDE.md`](GUIDE.md), sections 2 to 4; the wire formats are frozen in
+[`INTERFACE.md`](INTERFACE.md). This page keeps what those two do not spell out: the host
+kernel and thread layout, the safety envelope as tables, and the control-channel details.
 
 ## Why two hosts
 
-A torque-controlled FR3 needs a 1 kHz control loop that never misses a cycle; a teleoperation
-or policy-deployment workstation needs a GPU, a browser, cameras, a current kernel and frequent
-package updates. Running both on one machine means every kernel update is a risk to the robot,
-and every training job is a risk to the control loop (this is what happened on the previous
-single-host setup: 6 ms stalls on every core and a kernel update that broke the NIC driver).
-
-The split is: one small, pinned, boring real-time host that owns the robot, and any number of
-interchangeable client PCs that talk to it over a direct cable through a frozen, minimal
-interface. The client never links against libfranka and never sees the robot's IP.
+A torque-controlled FR3 needs a 1 kHz control loop that never misses a cycle; a teleoperation or
+policy workstation needs a GPU, a browser, cameras and a current kernel. On the previous
+single-host setup that combination produced 6 ms stalls on every core, and a kernel update broke
+the NIC driver. So one small, pinned real-time host owns the robot, and interchangeable client
+PCs talk to it over a direct cable through a frozen, minimal interface. GUIDE.md section 2.1 has
+the jitter numbers.
 
 ```
  client PC (10.10.0.1)                              RT host (10.10.0.2)                 FR3
@@ -23,68 +25,39 @@ interface. The client never links against libfranka and never sees the robot's I
 
 ## The three flows
 
-All three cross the same cable. Their formats are frozen in [`INTERFACE.md`](INTERFACE.md);
-a change to any of them bumps the protocol tag (`FRST1` -> `FRST2`).
+All three cross the same cable. A change to any of them bumps the protocol tag
+(`FRST1` -> `FRST2`). Formats, message names and rates: GUIDE.md section 2.2.
 
-### 1. Command stream (client -> host), UDP `10.10.0.2:50001`
+| flow | direction | transport | format |
+|---|---|---|---|
+| command | client -> host | UDP `10.10.0.2:50001` | 128 bytes = 16 little-endian float64 = column-major 4x4 `O_T_EE` (translation at indices 12, 13, 14) |
+| state | host -> client | UDP `10.10.0.1:50002` | `FRST1 <seq> <epoch_ns> <t_real_ns> <t_mono_ns> <name>\n<body>` |
+| control | client -> host | ssh forced command | `status`, `preflight`, `start pose`, `stop`, `restart pose [home]`, `goto home`, `gripper ...`, `echo`, `comm-test --yes` |
 
-One datagram = 128 bytes = 16 little-endian float64 = a column-major 4x4 homogeneous
-transform `O_T_EE` (translation at indices 12, 13, 14). No sequence number, no checksum; the
-format predates the split and was kept so that existing senders work unchanged. Any other
-length is dropped and counted (`cmd_drop_size`).
+The command format predates the split and was kept so that existing senders work unchanged;
+any other length is dropped and counted (`cmd_drop_size`). The impedance law (K_t 1000 N/m,
+K_r 80 Nm/rad, both softened to 25 % on contact) uses the Franka Hand load model (0.25 kg,
+COM z 0.05 m). These are compiled defaults; `franka-servo@pose` passes no task parameters.
 
-The servo low-pass filters the target (two cascaded first-order filters, `alpha` 0.05 at
-1 kHz) and tracks it with a Cartesian impedance law (K_t 1000 N/m, K_r 80 Nm/rad, both
-softened to 25 % on contact) using the Franka Hand load model (0.25 kg, COM z 0.05 m). These
-are the compiled defaults; `franka-servo@pose` passes no task parameters. A sender that stops
-for more than 200 ms triggers the hold (see the safety envelope).
+In the state stream, `body` is byte-identical to what the servo writes into
+`/tmp/franka/<name>` on the host, and `epoch_ns` is `CLOCK_REALTIME` at servo process start.
 
-### 2. State stream (host -> client), UDP `10.10.0.1:50002`
+The control verbs arrive through an `authorized_keys` entry of the form
+`command="/home/rongxuan_zhou/franka/bin/franka-ctl",no-pty,...,from="10.10.0.0/24"`; sshd
+passes the verb in `SSH_ORIGINAL_COMMAND`. Token validation, exit codes and the robot lock are
+in GUIDE.md section 3.1.
 
-```
-FRST1 <seq> <epoch_ns> <t_real_ns> <t_mono_ns> <name>\n<body>
-```
+## Host kernel, CPU and thread layout
 
-`name` is one of five file names and `body` is byte-identical to what the servo writes into
-`/tmp/franka/<name>` on the host:
-
-| name | tokens | rate |
-|---|---|---|
-| `franka_init_pose.txt` | 16 (`O_T_EE` at servo start) | once, then re-sent every 1 s |
-| `franka_current_ee.txt` | 16 | 20 Hz |
-| `franka_wrench.txt` | 6 (`O_F_ext_hat_K`) | 20 Hz |
-| `franka_joint_state.txt` | 28 (`q dq tau_J tau_ext_hat_filtered`) | 10 Hz |
-| `franka_link.txt` | 13 `key=value` pairs | 5 Hz |
-
-`epoch_ns` is `CLOCK_REALTIME` at servo process start. It changes exactly when a new servo
-instance starts, which is how the client learns that the reference pose in
-`franka_init_pose.txt` has changed. `franka_link.txt` is the servo's self-report: command age,
-packets per second, drop counters, latched sender, missed cycles, freeze/recovery flags, tick
-statistics and reflex count. Consumers on the client watch it to distinguish "sender dead"
-from "link dead" from "robot in reflex".
-
-### 3. Control verbs (client -> host), ssh forced command
-
-An ed25519 key whose `authorized_keys` entry carries
-`command="/home/rongxuan_zhou/franka/bin/franka-ctl",no-pty,...,from="10.10.0.0/24"`.
-The client runs `ssh <host> <verb ...>`; sshd passes the verb in `SSH_ORIGINAL_COMMAND`;
-`franka-ctl` validates every token against `[A-Za-z0-9._:=-]` and dispatches:
-`status`, `preflight`, `start pose`, `stop`, `restart pose [home]`, `goto home`, `gripper ...`,
-`echo`, `comm-test --yes`. Exit 64 = refused, 75 = busy. Anything that moves the arm or opens a
-second libfranka connection is serialized by `flock` on `/run/lock/franka-robot.lock` and
-refused while a servo unit is active.
-
-## Host-side process and CPU layout
-
-Kernel: `preempt=full isolcpus=domain,managed_irq,2,3 nohz_full=2,3 rcu_nocbs=2,3
+Kernel command line: `preempt=full isolcpus=domain,managed_irq,2,3 nohz_full=2,3 rcu_nocbs=2,3
 irqaffinity=0-1,4-31 threadirqs`. CPUs 2 and 3 are removed from the scheduler's domains and
-from the default IRQ mask; `franka-rt-tune` sets them to the performance governor, disables
+from the default IRQ mask. `franka-rt-tune` sets them to the performance governor, disables
 C-states deeper than C1, and pins every `enp110s0-*` MSI-X vector to CPU 3 with its IRQ thread
 at `SCHED_FIFO 85`.
 
 The servo runs inside the `franka-rt:0.17.0-jazzy` container (`--privileged --network host
---ulimit rtprio=99 --ulimit memlock=-1`), started by `systemd`'s `franka-servo@pose` unit
-under `systemd-inhibit` (no sleep, no lid action while it runs). Inside the process:
+--ulimit rtprio=99 --ulimit memlock=-1`), started by the `franka-servo@pose` unit under
+`systemd-inhibit` (no sleep, no lid action while it runs).
 
 | thread | CPU | policy | role |
 |---|---|---|---|
@@ -95,18 +68,18 @@ under `systemd-inhibit` (no sleep, no lid action while it runs). Inside the proc
 | `link_writer` | 4-15 | `SCHED_OTHER` | `franka_link.txt` at 5 Hz |
 
 Order in `main()`: `mlockall(MCL_CURRENT|MCL_FUTURE)`, 8 MB stack prefault, set the aux CPU
-mask, spawn the helpers (they inherit the mask), then pin `main` to CPU 2, then hand control to
-libfranka. The tick does no allocation, I/O or locking for any of the network features; the
-only shared state is lock-free single-producer/single-consumer triple buffers.
+mask, spawn the helpers (they inherit the mask), pin `main` to CPU 2, hand control to
+libfranka. The only state shared with the tick is lock-free single-producer/single-consumer
+triple buffers.
 
-`missed_cycles_total` counts callback intervals longer than 1.5 ms; the acceptance gate is
-at most 20 over a session. `tick_max_us_1s` on a healthy host sits near 1100-1140 us (the
-1 kHz period plus jitter).
+`missed_cycles_total` counts callback intervals longer than 1.5 ms; the acceptance gate is at
+most 20 over a session. `tick_max_us_1s` on a healthy host sits near 1100-1140 us (the 1 kHz
+period plus jitter).
 
-The control-plane NIC (`frlink0`, a USB gigabit port) is deliberately not real-time: it only
-carries the 90 Hz command stream, the 20 Hz state stream and ssh. The robot NIC
-(`enp110s0`, RTL8126 with `r8126`) is the only hard-real-time path and nftables drops
-everything on it except traffic to and from `172.16.0.2`.
+The control-plane NIC (`frlink0`, a USB gigabit port) is not real-time: it carries only the
+90 Hz command stream, the 20 Hz state stream and ssh. The robot NIC (`enp110s0`, RTL8126 with
+`r8126`) is the only hard-real-time path, and nftables drops everything on it except traffic to
+and from `172.16.0.2`.
 
 ## Safety envelope
 
@@ -125,10 +98,9 @@ These constants live in the servo source and were verified identical to the pre-
 | Mutual exclusion | `flock /run/lock/franka-robot.lock`; `goto`/`echo`/`comm-test` refused while a servo is active | one libfranka connection at a time |
 | Thermal guard | 1 Hz timer, `/run/franka/temp_c` | `status` and precheck read it; the RUNBOOK's failure table lists the stall symptoms seen near 100 C |
 
-What the envelope does not do: `cartesian_pose_servo` has no workspace guard, no bounding
-box and no joint-limit check beyond what the robot enforces; it follows the target it is given.
-Workspace safety is enforced one hop earlier, in the client's bridge (`02_webxr_to_franka.py`,
-parameters in `launch_live.sh`):
+`cartesian_pose_servo` has no workspace guard, no bounding box and no joint-limit check beyond
+what the robot enforces; it follows the target it is given. Workspace safety is enforced one hop
+earlier, in the client's bridge (`02_webxr_to_franka.py`):
 
 | guard | value | effect |
 |---|---|---|
@@ -141,29 +113,12 @@ parameters in `launch_live.sh`):
 A different sender (a policy, a script) must implement the same box and step cap itself. The
 user-stop button in the operator's hand is the last line.
 
-## What the mirror on the client does
+## Client side
 
-The client-side state mirror (`client/`, written separately) is a small daemon that binds UDP
-50002, accepts datagrams only from `10.10.0.2`, validates the `FRST1` header (six tokens,
-integer fields, known name, token count per name, key order for `franka_link.txt`), and
-writes each body to `/tmp/<name>` via a temp file plus `rename`, so consumers never read a
-half-written file. It keeps a per-name sequence guard against reordered datagrams.
-
-Two rules make the old single-host consumers work unchanged:
-
-- Files are never deleted on silence. Consumers already use the file's mtime as a staleness
-  signal (the bridge re-reads the EE file at its own frame rate and treats a stale one as
-  "servo or link is down"), so the right thing on silence is to stop advancing, not to delete.
-- `franka_init_pose.txt` is rewritten only when `epoch_ns` changes: the mirror unlinks the file
-  on an epoch change and writes it once from the first datagram of the new epoch, so its mtime
-  means "this servo instance started". The 1 Hz re-send does not touch the file afterwards.
-
-The mirror also writes a 1 Hz status line (`epoch seq src age_ms skew_ms rx drop_*`) where
-`skew_ms` is the receive wall-clock time minus the datagram's `t_real_ns`. This is the only
-clock comparison in the system; both hosts run NTP and the client preflight flags a skew above
-10 ms, because anything the client timestamps against the mirrored state (logs, recordings)
-would otherwise be silently off.
-
-Beyond the mirror, the client keeps a local `flock` (`/tmp/franka_sender.lock`) so that two
-local programs cannot both try to be the sender; without it the second one would be silently
-dropped by the servo latch rather than failing loudly.
+What the state mirror validates and how it writes the files is in GUIDE.md section 4.1. Two
+details matter for the design. `skew_ms` in the mirror's status line (receive wall-clock time
+minus the datagram's `t_real_ns`) is the only clock comparison in the system. The client
+preflight flags a skew above 10 ms, because anything the client timestamps against the mirrored
+state (logs, recordings) would otherwise be silently off. And the local `flock` on
+`/tmp/franka_sender.lock` exists so that a second local sender fails loudly instead of being
+silently dropped by the servo latch.
