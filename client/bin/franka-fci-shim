@@ -1,0 +1,31 @@
+#!/bin/bash
+# franka-fci-shim -- one script reached through the symlinks bin/gripper_cmd, bin/goto_home and
+# bin/echo_robot_state. They keep the command-line shape of the original direct-FCI binaries so
+# the bridge (teleop/02_webxr_to_franka.py) can call them as before, but on a client PC there is
+# no libfranka and no robot link: every alias is routed to franka-ctl on the RT host through
+# bin/franka-remote. Remote mode only knows the canonical motion (goto home); any other goto
+# request is refused rather than silently replaced by a different arm motion.
+set -u
+name=$(basename "$0")
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)   # bin/ of this repository
+ROOT=$(cd "$here/.." && pwd)
+[ -f "$ROOT/config.env" ] && . "$ROOT/config.env"
+remote=$here/franka-remote
+if [ -z "${FRANKA_SERVO_HOST:-}" ]; then
+  echo "$name: FRANKA_SERVO_HOST is not set. This client package is remote-only (no local libfranka" >&2
+  echo "$name: binaries); create $ROOT/config.env from config.env.example and point it at the RT host." >&2
+  exit 64
+fi
+hint="remote mode: use 'franka-remote goto home' instead"
+case "$name" in
+  gripper_cmd)
+    shift || true                         # drop <robot-ip>; franka-ctl injects it on the host
+    exec "$remote" gripper "$@" ;;
+  echo_robot_state)
+    exec "$remote" echo ;;
+  goto_home)
+    shift || true
+    for a in "$@"; do case "$a" in --q|--mode) echo "goto_home: custom joint targets are not available in $hint" >&2; exit 64;; esac; done
+    exec "$remote" goto home ;;
+  *) echo "franka-fci-shim: unknown alias '$name' (expected gripper_cmd, goto_home or echo_robot_state)" >&2; exit 64 ;;
+esac

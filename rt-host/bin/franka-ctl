@@ -39,7 +39,7 @@ case "$verb" in
     echo "== containers"; docker ps --format '  {{.Names}} {{.Status}}' | grep franka- || echo "  (none)"
     echo "== links";  printf '  fci  enp110s0 %s %s\n' "$(cat /sys/class/net/enp110s0/operstate 2>/dev/null)" "$(ip -4 -br addr show enp110s0 2>/dev/null | awk '{print $3}')"
                       printf '  rog  frlink0  %s %s\n' "$(cat /sys/class/net/frlink0/operstate 2>/dev/null || echo absent)" "$(ip -4 -br addr show frlink0 2>/dev/null | awk '{print $3}')"
-    echo "== host   temp=$(cat /run/franka/temp_c 2>/dev/null || echo ?)C ac=$(cat /sys/class/power_supply/AC/online 2>/dev/null) isolated=$(cat /sys/devices/system/cpu/isolated)"
+    echo "== host   temp=$(cat /run/franka/temp_med 2>/dev/null || echo ?)C(10s median) peak=$(cat /run/franka/temp_c 2>/dev/null || echo ?)C ac=$(cat /sys/class/power_supply/AC/online 2>/dev/null) isolated=$(cat /sys/devices/system/cpu/isolated)"
     echo "== link";   cat /tmp/franka/franka_link.txt 2>/dev/null || echo "  (no franka_link.txt)"
     echo "== log";    for m in pose; do [ -f /tmp/franka/servo-$m.log ] && { echo "  -- servo-$m.log"; tail -n 5 /tmp/franka/servo-$m.log | sed 's/^/  /'; }; done
     exit 0 ;;

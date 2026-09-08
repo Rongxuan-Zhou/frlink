@@ -1,0 +1,17 @@
+# systemd --user unit for the client-side state mirror. install.sh substitutes @ROOT@ and
+# @FRANKA_SERVO_HOST@ and writes the result to ~/.config/systemd/user/franka-state-mirror.service.
+# The mirror needs only the system python3 (standard library), not the teleop environment.
+[Unit]
+Description=Franka FR3 state mirror (FRST1 UDP 50002 from the RT host -> /tmp/franka_*.txt)
+Documentation=file://@ROOT@/README.md
+
+[Service]
+ExecStart=/usr/bin/env python3 @ROOT@/bin/franka_state_mirror --bind 0.0.0.0 --port 50002 --from @FRANKA_SERVO_HOST@ --dir /tmp --quiet
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=5
+Nice=-5
+
+[Install]
+WantedBy=default.target

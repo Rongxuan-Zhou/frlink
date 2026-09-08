@@ -1,0 +1,45 @@
+# Camera configuration: the single source of truth for serial -> role binding.
+#
+# Roles are free names (they become HDF5 group names under observations/). The values below
+# are the reference rig (two wrist-mounted Intel RealSense cameras on the author's FR3) and
+# MUST be replaced with your own serial numbers. Find them with:
+#
+#   rs-enumerate-devices | grep -E 'Name|Serial Number'
+#   # or, without the librealsense tools:
+#   python3 -c "import pyrealsense2 as rs; [print(d.get_info(rs.camera_info.name), d.get_info(rs.camera_info.serial_number)) for d in rs.context().query_devices()]"
+#
+# A role whose serial is not plugged in is skipped at start (the recorder prints a warning).
+
+defaults:
+  width: 640
+  height: 480
+  fps: 30
+  color_format: bgr8        # OpenCV friendly
+  enable_depth: true        # grabber only; the recorder stores colour + timestamps
+  depth_format: z16
+  depth_fps: 30
+  align_depth_to_color: true
+  hardware_reset_on_start: false  # Without librealsense udev rules a D455 hardware_reset() can leave
+                                  # the UVC XU endpoint in "Protocol error", recoverable only by
+                                  # re-plugging the USB cable. Leave this off unless you know your
+                                  # host tolerates it (the D405 does).
+  reset_timeout_s: 10.0
+
+cameras:
+  wrist_d455:
+    serial: "239622301879"          # <- replace with your D455 serial
+    description: "Wrist-mounted D455, colour + depth"
+    firmware: "5.16.0.1"
+    # Auto exposure / white balance on, slight negative brightness bias against table glare.
+    # (Grabber/preview only: the recorder applies its own RECORD profile, see record/README.md.)
+    options:
+      enable_auto_exposure: 1
+      enable_auto_white_balance: 1
+      brightness: -6           # -64..64; more negative = darker; 0 = default
+
+  wrist_d405:
+    serial: "335122270512"          # <- replace with your D405 serial (or delete this role)
+    description: "Wrist-mounted D405, close-range colour + depth"
+    firmware: "5.12.14.100"
+    # The D405 colour image comes from the depth module; keep the sensor at its defaults.
+    options: {}

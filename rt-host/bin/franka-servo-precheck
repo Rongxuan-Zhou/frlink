@@ -12,10 +12,10 @@ mkdir -p /tmp/franka /run/franka; chmod 1777 /tmp/franka
 nft list table inet franka >/dev/null 2>&1 || fail "nftables table inet franka not loaded (sudo systemctl enable --now nftables)"
 for i in enp110s0 frlink0; do [ -d /sys/class/net/$i ] && { echo 0 > /proc/sys/net/ipv4/conf/$i/forwarding || fail "cannot clear forwarding on $i"; }; done
 [ "$(cat /sys/class/power_supply/AC/online 2>/dev/null)" = 1 ] || fail "AC power not online"
-# Package temperature: median of 5 samples over 2 s. Single-core turbo bursts from desktop apps spike the
-# package sensor to 95-100C for < 1 s (measured 2026-09-08); a one-shot sample refused ~1 start in 10.
-t=$(for i in 1 2 3 4 5; do /home/rongxuan_zhou/franka/host/franka-thermal-guard.sh --print; sleep 0.4; done | sort -n | sed -n 3p)
-[ "$t" -lt 85 ] || fail "package temp ${t}C (median of 5) >= 85C"
+# Package temperature: 10 s rolling median from the 1 Hz thermal guard. Single-core turbo bursts spike the
+# instantaneous sensor to 95-100C for < 1 s and used to refuse ~1 start in 10; the median ignores them while
+# still refusing a genuinely hot host.
+t=$(/home/rongxuan_zhou/franka/host/franka-thermal-guard.sh --median); [ "$t" -lt 85 ] || fail "package temp ${t}C (10 s median) >= 85C"
 for m in pose; do [ "$m" = "$mode" ] && continue; systemctl is-active --quiet "franka-servo@$m" && fail "franka-servo@$m is active"; done
 busy=$(docker ps --format '{{.Names}}' | grep -E '^franka-(servo|goto|echo|commtest|stub)' | tr '\n' ' '); [ -z "$busy" ] || fail "robot busy: $busy"
 ip -4 addr | grep -q "inet $BIND/" || fail "command bind address $BIND is not configured on any interface (frlink0/franka-link down?)"

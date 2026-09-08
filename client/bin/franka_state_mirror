@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""franka_state_mirror -- receive FRST1 state datagrams from the RT host and mirror them to files.
+
+The torque servo on the RT host publishes every state file body it writes as one UDP datagram
+(contract: docs/INTERFACE.md, section 2.3):
+
+    FRST1 <seq> <epoch_ns> <t_real_ns> <t_mono_ns> <name>\\n<body bytes>
+
+This daemon validates each datagram and writes the body, byte for byte, to <dir>/<name> with an
+atomic temp-file + rename, so the consumers on this PC (teleop bridge, episode recorder, state
+reader) read /tmp/franka_*.txt exactly as they would if the servo ran locally.
+
+Behaviour that matters to the consumers:
+  * Files are only written on receipt. When the link or the servo goes silent the files simply stop
+    advancing and the consumers' own mtime checks (250 ms / 500 ms) trip; nothing is deleted.
+  * franka_init_pose.txt is written once per servo epoch (the servo re-sends it every second, but the
+    file's mtime must mean "this servo instance started", which the launcher relies on). On an epoch
+    change the stale file is unlinked first, so a bridge polling for it can never latch onto the old
+    servo's pose.
+  * A datagram whose seq is lower than the last one written for the same name (same epoch) is
+    dropped: an older EE sample must never overwrite a newer one.
+  * A one-line status file (default /tmp/franka_mirror.txt) is rewritten at 1 Hz for preflight and
+    for franka-teleop's readiness check. Its skew_ms field is the minimum over the last second of
+    (local wall clock at receive - t_real_ns) and approximates clock skew + one-way latency.
+
+Modes:
+  (default)          run as a daemon (used by the franka-state-mirror systemd --user unit)
+  --check            read-only health check of the files written by the daemon; exit 0/1
+  --once             bind, wait for one valid datagram, print its header, exit 0 (bring-up aid);
+                     refuses with exit 75 while a daemon is writing the status file
+
+Only the Python standard library is used so the unit can run on the system interpreter.
+The default source filter is $FRANKA_SERVO_HOST (10.10.0.2 when unset).
+"""
+import argparse
+import os
+import signal
+import socket
+import sys
+import time
+
+MAGIC = b"FRST1"
+EXPECT = {
+    "franka_init_pose.txt": 16,
+    "franka_current_ee.txt": 16,
+    "franka_wrench.txt": 6,
+    "franka_joint_state.txt": 28,
+    "franka_link.txt": "kv",
+}
+LINK_KEYS = [
+    "cmd_age_ms", "cmd_pkts_last_s", "cmd_drop_size", "cmd_drop_allow", "cmd_drop_latch",
+    "latched_sender", "missed_cycles_total", "max_consecutive_missed", "freeze", "recovering",
+    "tick_over_1p2ms_1s", "tick_max_us_1s", "reflex_count",
+]
+INIT_NAME = "franka_init_pose.txt"
+EE_NAME = "franka_current_ee.txt"
+STATUS_FIELDS = ["epoch", "seq", "src", "age_ms", "skew_ms", "rx", "drop_src", "drop_hdr",
+                 "drop_name", "drop_body", "drop_reorder", "stale_s", "started", "stopped"]
+
+
+def parse_datagram(data):
+    """Return (seq, epoch, t_real_ns, t_mono_ns, name, body) or None if the header is malformed."""
+    nl = data.find(b"\n")
+    if nl < 0:
+        return None
+    hdr = data[:nl].split()
+    if len(hdr) != 6 or hdr[0] != MAGIC:
+        return None
+    try:
+        seq, epoch, t_real, t_mono = (int(hdr[1]), int(hdr[2]), int(hdr[3]), int(hdr[4]))
+    except ValueError:
+        return None
+    return seq, epoch, t_real, t_mono, hdr[5].decode("ascii", "replace"), data[nl + 1:]
+
+
+def body_ok(name, body):
+    """Validate the body against the contract: N floats, or the 13 link keys in order."""
+    expect = EXPECT[name]
+    toks = body.split()
+    if expect == "kv":
+        keys = [t.split(b"=", 1)[0].decode("ascii", "replace") for t in toks]
+        return keys == LINK_KEYS
+    if len(toks) != expect:
+        return False
+    try:
+        for t in toks:
+            float(t)
+    except ValueError:
+        return False
+    return True
+
+
+def atomic_write(path, body):
+    """Write body to path via a same-directory temp file and rename (readers never see a torn file)."""
+    d, n = os.path.split(path)
+    tmp = os.path.join(d, ".%s.tmp" % n)
+    if not body.endswith(b"\n"):
+        body += b"\n"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.write(fd, body)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+
+
+class Mirror:
+    def __init__(self, args):
+        self.args = args
+        self.dir = args.dir
+        self.status_path = args.status_file
+        self.from_ips = set(filter(None, args.from_ip.split(","))) if args.from_ip else None
+        self.epoch = 0
+        self.seq_last = 0
+        self.seq_by_name = {}
+        self.init_body = None
+        self.src = "none"
+        self.last_ee_wall = 0.0
+        self.last_rx_wall = 0.0
+        self.skew_window = []
+        self.skew_ms = None
+        self.counters = dict(rx=0, drop_src=0, drop_hdr=0, drop_name=0, drop_body=0, drop_reorder=0)
+        self.started = int(time.time())
+        self.stop = False
+
+    # ---- status file -------------------------------------------------------------------------
+    def status_line(self, stopped=0):
+        now = time.time()
+        age_ms = -1 if self.last_ee_wall == 0 else int((now - self.last_ee_wall) * 1000)
+        stale_s = -1 if self.last_rx_wall == 0 else int(now - self.last_rx_wall)
+        vals = dict(epoch=self.epoch, seq=self.seq_last, src=self.src, age_ms=age_ms,
+                    skew_ms=("n/a" if self.skew_ms is None else "%.2f" % self.skew_ms),
+                    stale_s=stale_s, started=self.started, stopped=stopped, **self.counters)
+        return " ".join("%s=%s" % (k, vals[k]) for k in STATUS_FIELDS)
+
+    def write_status(self, stopped=0):
+        if self.skew_window:
+            self.skew_ms = min(self.skew_window)
+            self.skew_window = []
+        try:
+            atomic_write(self.status_path, self.status_line(stopped).encode())
+        except OSError as e:
+            print("[mirror] cannot write %s: %s" % (self.status_path, e), file=sys.stderr)
+
+    # ---- one datagram --------------------------------------------------------------------------
+    def handle(self, data, addr, rx_wall_ns):
+        c = self.counters
+        if self.from_ips is not None and addr[0] not in self.from_ips:
+            c["drop_src"] += 1
+            return
+        parsed = parse_datagram(data)
+        if parsed is None:
+            c["drop_hdr"] += 1
+            return
+        seq, epoch, t_real, _t_mono, name, body = parsed
+        if name not in EXPECT:
+            c["drop_name"] += 1
+            return
+        if not body_ok(name, body):
+            c["drop_body"] += 1
+            return
+        if epoch != self.epoch:
+            self.on_epoch_change(epoch, name)
+        last = self.seq_by_name.get(name)
+        if last is not None and seq < last:
+            c["drop_reorder"] += 1
+            return
+        self.seq_by_name[name] = seq
+        c["rx"] += 1
+        self.seq_last = max(self.seq_last, seq)
+        self.src = "%s:%d" % addr
+        self.last_rx_wall = time.time()
+        self.skew_window.append((rx_wall_ns - t_real) / 1e6)
+        if name == INIT_NAME:
+            if body == self.init_body:
+                return  # 1 Hz re-send of an unchanged init pose: leave the file (and its mtime) alone
+            self.init_body = body
+        elif name == EE_NAME:
+            self.last_ee_wall = self.last_rx_wall
+        atomic_write(os.path.join(self.dir, name), body)
+
+    def on_epoch_change(self, epoch, name):
+        old = self.epoch
+        self.epoch = epoch
+        self.seq_by_name = {}
+        self.init_body = None
+        try:
+            os.unlink(os.path.join(self.dir, INIT_NAME))
+        except FileNotFoundError:
+            pass
+        if old != 0:
+            print("[mirror] EPOCH CHANGE %d -> %d (first datagram: %s)" % (old, epoch, name), flush=True)
+        self.write_status()
+
+    # ---- main loop -----------------------------------------------------------------------------
+    def run(self):
+        a = self.args
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+        sock.bind((a.bind, a.port))
+        sock.settimeout(0.25)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: setattr(self, "stop", True))
+        os.makedirs(self.dir, exist_ok=True)
+        print("[mirror] listening on %s:%d from=%s dir=%s" % (a.bind, a.port, a.from_ip or "any", self.dir),
+              flush=True)
+        self.write_status()
+        next_status = time.monotonic() + 1.0
+        while not self.stop:
+            try:
+                data, addr = sock.recvfrom(65535)
+                self.handle(data, addr, time.time_ns())
+            except socket.timeout:
+                pass
+            except OSError as e:
+                print("[mirror] recv error: %s" % e, file=sys.stderr)
+            if time.monotonic() >= next_status:
+                self.write_status()
+                if not a.quiet:
+                    print("[mirror] " + self.status_line(), flush=True)
+                next_status += 1.0
+        sock.close()
+        self.write_status(stopped=1)
+        print("[mirror] stopped: " + self.status_line(stopped=1), flush=True)
+        return 0
+
+
+def file_age_s(path):
+    try:
+        return time.time() - os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def read_status(path):
+    try:
+        with open(path) as f:
+            toks = f.read().split()
+        return dict(t.split("=", 1) for t in toks if "=" in t)
+    except OSError:
+        return None
+
+
+def cmd_check(args):
+    """Health check on the daemon's files only (a second bind would steal datagrams from it)."""
+    st = read_status(args.status_file)
+    st_age = file_age_s(args.status_file)
+    if st is None or st_age is None:
+        print("FAIL mirror status file %s missing (daemon not running?)" % args.status_file)
+        return 1
+    if st.get("stopped") == "1" or st_age > 2.0:
+        print("FAIL mirror daemon not alive (status age %.1f s, stopped=%s)" % (st_age, st.get("stopped")))
+        return 1
+    ee = os.path.join(args.dir, EE_NAME)
+    ee_age = file_age_s(ee)
+    ok = True
+    if ee_age is None:
+        print("FAIL %s missing (no state stream received yet)" % ee)
+        ok = False
+    elif ee_age * 1000 > args.max_age_ms:
+        print("FAIL %s stale: %.0f ms > %d ms" % (ee, ee_age * 1000, args.max_age_ms))
+        ok = False
+    else:
+        try:
+            ntok = len(open(ee).read().split())
+        except OSError:
+            ntok = -1
+        if ntok != 16:
+            print("FAIL %s has %d tokens, expected 16" % (ee, ntok))
+            ok = False
+    print("%s epoch=%s src=%s age_ms=%s skew_ms=%s rx=%s drops=%s" % (
+        "PASS" if ok else "INFO", st.get("epoch"), st.get("src"), st.get("age_ms"), st.get("skew_ms"),
+        st.get("rx"), ",".join(st.get(k, "?") for k in ("drop_src", "drop_hdr", "drop_name", "drop_body", "drop_reorder"))))
+    return 0 if ok else 1
+
+
+def cmd_once(args):
+    st_age = file_age_s(args.status_file)
+    if st_age is not None and st_age < 2.0:
+        print("franka_state_mirror --once: a daemon is active (status age %.1f s); refusing to bind" % st_age)
+        return 75
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((args.bind, args.port))
+    sock.settimeout(args.timeout)
+    deadline = time.monotonic() + args.timeout
+    while time.monotonic() < deadline:
+        try:
+            data, addr = sock.recvfrom(65535)
+        except socket.timeout:
+            break
+        p = parse_datagram(data)
+        if p and p[4] in EXPECT and body_ok(p[4], p[5]):
+            print("from %s:%d seq=%d epoch=%d t_real_ns=%d name=%s body_tokens=%d skew_ms=%.2f" % (
+                addr[0], addr[1], p[0], p[1], p[2], p[4], len(p[5].split()), (time.time_ns() - p[2]) / 1e6))
+            return 0
+    print("no valid FRST1 datagram on %s:%d within %.1f s" % (args.bind, args.port, args.timeout))
+    return 1
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--bind", default="0.0.0.0")
+    ap.add_argument("--port", type=int, default=50002)
+    ap.add_argument("--from", dest="from_ip", default=os.environ.get("FRANKA_SERVO_HOST", "10.10.0.2"),
+                    help="comma-separated source IPs accepted (empty = any); default $FRANKA_SERVO_HOST or 10.10.0.2")
+    ap.add_argument("--dir", default="/tmp", help="directory the consumers read from")
+    ap.add_argument("--status-file", default="/tmp/franka_mirror.txt")
+    ap.add_argument("--quiet", action="store_true", help="no 1 Hz status line on stdout")
+    ap.add_argument("--check", action="store_true", help="health check of the daemon's files; exit 0/1")
+    ap.add_argument("--max-age-ms", type=int, default=250, help="--check: max age of the EE file")
+    ap.add_argument("--once", action="store_true", help="receive one valid datagram and exit")
+    ap.add_argument("--timeout", type=float, default=2.0, help="--once: seconds to wait")
+    args = ap.parse_args()
+    if args.check:
+        return cmd_check(args)
+    if args.once:
+        return cmd_once(args)
+    return Mirror(args).run()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

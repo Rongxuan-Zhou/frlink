@@ -1,0 +1,43 @@
+#!/bin/bash
+# franka-remote <verb> [args...] -- run a franka-ctl verb on the RT host over the forced-command
+# ssh key. Verbs (docs/INTERFACE.md 2.4): status | preflight | start pose | stop |
+# restart pose [home] | goto home | gripper <argv...> | echo | comm-test --yes
+# (the host may offer further modes/targets; whatever follows the verb is passed through)
+# Exit codes are passed through unchanged: 0 ok, program code, 64 usage/refused, 75 busy,
+# 124 timeout (local), 255 ssh connection failure.
+# Configuration comes from <repo>/config.env: FRANKA_SERVO_HOST, FRANKA_CTL_USER, FRANKA_CTL_KEY,
+# optional FRANKA_CTL_HOST (ssh target if it differs from FRANKA_SERVO_HOST) and FRANKA_CTL_TIMEOUT.
+set -u
+ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+[ -f "$ROOT/config.env" ] && . "$ROOT/config.env"
+verb=${1:-}
+if [ -z "${FRANKA_SERVO_HOST:-}" ]; then
+  echo "franka-remote: FRANKA_SERVO_HOST is not set (create $ROOT/config.env from config.env.example)" >&2; exit 64
+fi
+if [ -z "${FRANKA_CTL_USER:-}" ]; then
+  echo "franka-remote: FRANKA_CTL_USER is not set (the account on the RT host; see $ROOT/config.env.example)" >&2; exit 64
+fi
+if [ -z "$verb" ]; then sed -n '2,6p' "$0" | sed 's/^# \?//' >&2; exit 64; fi
+host=${FRANKA_CTL_HOST:-$FRANKA_SERVO_HOST}
+user=$FRANKA_CTL_USER
+key=${FRANKA_CTL_KEY:-$HOME/.ssh/franka_ctl}
+if [ ! -r "$key" ]; then
+  echo "franka-remote: key $key not found (run install.sh, then have the host admin authorize the public key)" >&2; exit 255
+fi
+case "$verb" in
+  status|gripper|echo) t=20 ;;
+  preflight)           t=30 ;;
+  start|stop)          t=45 ;;
+  goto|restart)        t=120 ;;
+  comm-test)           t=90 ;;
+  *)                   t=30 ;;
+esac
+t=${FRANKA_CTL_TIMEOUT:-$t}
+timeout -k 5 "$t" ssh -o BatchMode=yes -o ConnectTimeout=3 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
+    -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i "$key" "$user@$host" "$@"
+rc=$?
+case $rc in
+  124) echo "franka-remote: '$verb' timed out after ${t}s (RT host busy or link down)" >&2 ;;
+  255) echo "franka-remote: ssh to $user@$host failed (link down, key not authorized, or host key unknown; see install.sh output)" >&2 ;;
+esac
+exit $rc

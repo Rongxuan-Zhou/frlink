@@ -1,0 +1,9 @@
+# Python environment for episode recording (record/record_episodes.py, record/cameras/).
+# Can be the same environment as requirements-teleop.txt or a separate one; the recorder does
+# not import teleop. Versions verified on the reference client (Python 3.11, 2026-09-08);
+# pyrealsense2 wheels exist for CPython 3.8-3.12 on x86_64 Linux.
+pyrealsense2==2.57.7.10387
+h5py==3.16.0
+numpy==2.2.6
+opencv-python==4.13.0.92
+PyYAML==6.0.3

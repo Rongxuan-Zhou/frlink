@@ -23,7 +23,7 @@ if [ -d /sys/class/net/frlink0 ]; then ip -4 addr show dev frlink0 | grep -q 'in
 else W "frlink0 absent (ASIX USB port 00:0a:cd:48:1e:dd not present) — remote clients cannot reach the servo"; fi
 [ "$(cat /sys/class/power_supply/AC/online 2>/dev/null)" = 1 ] && P "AC online" || F "AC power not online"
 [ "$(systemctl is-enabled sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null | sort -u)" = masked ] && P "sleep targets masked" || F "sleep targets not masked"
-t=$(/home/rongxuan_zhou/franka/host/franka-thermal-guard.sh --print); [ "$t" -lt 85 ] && P "package temp ${t}C" || F "package temp ${t}C >= 85C"
+t=$(/home/rongxuan_zhou/franka/host/franka-thermal-guard.sh --median); [ "$t" -lt 85 ] && P "package temp ${t}C" || F "package temp ${t}C >= 85C"
 [ "$(apt-mark showhold | wc -l)" -ge 9 ] && P "apt holds $(apt-mark showhold | wc -l)" || F "apt holds missing"
 docker image inspect "$IMAGE" >/dev/null 2>&1 && P "image $IMAGE" || F "image $IMAGE missing"
 [ -x /home/rongxuan_zhou/franka/teleop/cartesian_pose_servo ] && P "servo binaries built" || F "teleop binaries not built"

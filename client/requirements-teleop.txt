@@ -1,0 +1,9 @@
+# Python environment for the WebXR bridge (teleop/02_webxr_to_franka.py) and bin/franka-teleop.
+# Point FRANKA_PY in config.env at the interpreter of this environment.
+# Versions are the set verified on the reference client (Python 3.12, 2026-09-08).
+teleop==0.1.5
+numpy==2.4.4
+scipy==1.17.1
+transforms3d==0.4.2
+fastapi==0.136.1
+uvicorn==0.46.0

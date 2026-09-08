@@ -1,0 +1,88 @@
+#!/bin/bash
+# franka-client-preflight -- client-side checks before driving the FR3 through the RT host.
+# Prints PASS/WARN/FAIL lines in the same style as the host's franka-preflight; exit 1 on any FAIL.
+# Run it at the start of every session; every line must be PASS or an explained WARN.
+set -u
+ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+[ -f "$ROOT/config.env" ] && . "$ROOT/config.env"
+fails=0
+P(){ echo "PASS  $*"; }
+W(){ echo "WARN  $*"; }
+F(){ echo "FAIL  $*"; fails=$((fails+1)); }
+
+# 1. configuration
+if [ ! -f "$ROOT/config.env" ]; then
+  F "$ROOT/config.env missing (cp config.env.example config.env and edit it)"
+  echo; echo "CLIENT PREFLIGHT FAIL ($fails)"; exit 1
+fi
+for v in FRANKA_SERVO_HOST FRANKA_CTL_USER FRANKA_CLIENT_IP FRANKA_LINK_IFACE; do
+  if [ -z "${!v:-}" ]; then F "$v is empty in config.env"; fi
+done
+[ "$fails" = 0 ] || { echo; echo "CLIENT PREFLIGHT FAIL ($fails)"; exit 1; }
+P "config: host=$FRANKA_SERVO_HOST user=$FRANKA_CTL_USER client=$FRANKA_CLIENT_IP iface=$FRANKA_LINK_IFACE"
+key=${FRANKA_CTL_KEY:-$HOME/.ssh/franka_ctl}
+if [ -r "$key" ]; then
+  m=$(stat -c %a "$key" 2>/dev/null); [ "$m" = 600 ] || [ "$m" = 400 ] && P "key $key (mode $m)" || W "key $key has mode $m (expected 600)"
+else F "key $key missing (run install.sh)"; fi
+PY=${FRANKA_PY:-python3}
+if command -v "$PY" >/dev/null 2>&1; then
+  if "$PY" -c 'import teleop, numpy, scipy' 2>/dev/null; then P "FRANKA_PY=$PY has teleop/numpy/scipy"
+  else W "FRANKA_PY=$PY lacks teleop/numpy/scipy (pip install -r requirements-teleop.txt); the bridge will not start"; fi
+else F "FRANKA_PY=$PY not found"; fi
+
+# 2. private link
+iface=$FRANKA_LINK_IFACE
+if [ -e "/sys/class/net/$iface" ]; then
+  if [ "$(cat /sys/class/net/$iface/carrier 2>/dev/null)" = 1 ]; then P "$iface carrier up"; else F "$iface has no carrier (cable unplugged or peer port down)"; fi
+  if ip -4 addr show "$iface" 2>/dev/null | grep -q "inet $FRANKA_CLIENT_IP/"; then P "$iface $FRANKA_CLIENT_IP"
+  else F "$iface does not carry $FRANKA_CLIENT_IP (nmcli con up franka-link, or see install.sh output)"; fi
+else F "interface $iface does not exist (FRANKA_LINK_IFACE in config.env; see 'ip -br link')"; fi
+if out=$(ping -c 3 -i 0.2 -W 1 -q "$FRANKA_SERVO_HOST" 2>/dev/null) && echo "$out" | grep -q ' 0% packet loss'; then
+  P "ping $FRANKA_SERVO_HOST: $(echo "$out" | grep -oE 'rtt.*' | cut -d= -f2 | tr -d ' ')"
+else F "ping $FRANKA_SERVO_HOST failed (cable / host link down?)"; fi
+
+# 3. control channel
+if out=$("$ROOT/bin/franka-remote" status 2>&1); then
+  P "franka-remote status ok: $(echo "$out" | grep -E 'franka-servo@' | tr -s ' ' | paste -sd, -)"
+else F "franka-remote status failed (rc=$?): $(echo "$out" | tail -1)"; fi
+
+# 4. state mirror
+systemctl --user is-active --quiet franka-state-mirror && P "franka-state-mirror unit active" || F "franka-state-mirror unit not active (systemctl --user start franka-state-mirror; install.sh installs it)"
+n=$(ss -lun 2>/dev/null | grep -c ':50002 ')
+[ "$n" = 1 ] && P "one UDP listener on :50002" || F "$n listeners on :50002 (expected 1)"
+if out=$("$ROOT/bin/franka_state_mirror" --check --dir /tmp 2>&1); then P "mirror: ${out#PASS }"
+else
+  if echo "$out" | grep -q "daemon"; then F "mirror: $out"; else W "mirror: $out (servo not running?)"; fi
+fi
+if [ -f /tmp/franka_current_ee.txt ]; then
+  a=$(stat -c %.3Y /tmp/franka_current_ee.txt 2>/dev/null); sleep 0.3; b=$(stat -c %.3Y /tmp/franka_current_ee.txt 2>/dev/null)
+  [ "$a" != "$b" ] && P "/tmp/franka_current_ee.txt mtime advancing" || W "/tmp/franka_current_ee.txt not advancing (no state stream)"
+fi
+
+# 5. clocks (skew_ms = client receive time - host t_real_ns, minimum over 1 s: skew + one-way latency)
+skew=$(tr ' ' '\n' < /tmp/franka_mirror.txt 2>/dev/null | grep '^skew_ms=' | cut -d= -f2)
+if [ -z "$skew" ] || [ "$skew" = n/a ]; then W "clock skew n/a (no state stream yet)"
+else
+  s=${skew#-}; s=${s%%.*}
+  if [ "$s" -lt 10 ]; then P "clock skew ${skew} ms (<10)"; elif [ "$s" -lt 50 ]; then W "clock skew ${skew} ms (10-50: recorded action labels degrade; check NTP)"; else F "clock skew ${skew} ms (>=50: fix NTP on both hosts)"; fi
+fi
+[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ] && P "NTP synchronized" || W "NTP not synchronized (timedatectl set-ntp true)"
+
+# 6. no competing sender on this PC
+if flock -n /tmp/franka_sender.lock true 2>/dev/null; then P "sender lock free"; else W "sender lock held: $(cat /tmp/franka_sender.lock 2>/dev/null)"; fi
+ls=$(tr ' ' '\n' < /tmp/franka_link.txt 2>/dev/null | grep '^latched_sender=' | cut -d= -f2)
+[ -n "$ls" ] && [ "$ls" != none ] && W "servo has a latched sender: $ls" || true
+
+# 7. stray / leftover processes (test harnesses, duplicate mirrors, dead bridges)
+stray=$(ps -eo pid,stat,etimes,cmd | grep -E 'fake_frst1|fake_sender|state_sink|franka_state_mirror|02_webxr_to_franka|record_episodes' | grep -v grep)
+nm=$(echo "$stray" | grep -c franka_state_mirror || true)
+[ "$nm" -le 1 ] && P "mirror processes: $nm" || F "$nm franka_state_mirror processes (duplicate daemon)"
+tests=$(echo "$stray" | grep -E 'fake_frst1|fake_sender|state_sink' | awk '{print $1":"$4}' | paste -sd, -)
+[ -z "$tests" ] && P "no leftover test harness processes" || W "leftover test processes: $tests"
+zomb=$(ps -eo pid,stat,cmd | awk '$2 ~ /Z/ && $0 ~ /franka|webxr|record_episodes/ {print $1}' | paste -sd, -)
+[ -z "$zomb" ] && P "no zombie processes" || W "zombie processes: $zomb"
+clients=$(echo "$stray" | grep -E '02_webxr|record_episodes' | awk '{print $1":"$4}' | paste -sd, -)
+[ -n "$clients" ] && W "client processes already running: $clients" || true
+
+echo
+if [ "$fails" = 0 ]; then echo "CLIENT PREFLIGHT PASS"; exit 0; else echo "CLIENT PREFLIGHT FAIL ($fails)"; exit 1; fi

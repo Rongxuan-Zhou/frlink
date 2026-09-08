@@ -1,0 +1,146 @@
+#!/bin/bash
+# franka-teleop -- Quest/WebXR -> Franka FR3 6-DOF teleoperation orchestrator (two-host mode).
+#
+# The 1 kHz torque servo runs on the RT host and is driven through bin/franka-remote; this
+# script waits for the state mirror (franka-state-mirror user unit) to see the new servo
+# instance, then starts the WebXR bridge (teleop/02_webxr_to_franka.py) on this PC with the
+# remote UDP target. Gripper commands from the bridge go through the same ssh channel
+# (bin/gripper_cmd is a symlink to bin/franka-fci-shim).
+#
+# Usage:
+#   franka-teleop home                    goto home on the RT host (arm moves, ~10 s)
+#   franka-teleop servo-only              start the pose servo on the RT host, wait for state
+#   franka-teleop bridge-only             start the bridge only (servo already running)
+#   franka-teleop [live]                  servo + bridge
+#   franka-teleop restart                 stop bridge + servo -> home -> relaunch (arm moves, ~60 s)
+#   franka-teleop stop                    stop bridge and servo
+#   franka-teleop status                  bridge process, mirror health, remote units
+#   franka-teleop wait-ready [timeout_s]  block until a fresh servo state is mirrored
+#   Logs: tail -f /tmp/franka_servo.log /tmp/franka_live.log
+#
+# Teleop parameters live in this file (or as FRANKA_* overrides in config.env) so that a session
+# is reproducible from the repository, not from an ad-hoc command line.
+set -euo pipefail
+ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+[ -f "$ROOT/config.env" ] && . "$ROOT/config.env"
+BIN=$ROOT/bin
+BRIDGE=$ROOT/teleop/02_webxr_to_franka.py
+PY=${FRANKA_PY:-python3}
+REMOTE=${FRANKA_SERVO_HOST:-}
+if [ -z "$REMOTE" ]; then
+  echo "franka-teleop: FRANKA_SERVO_HOST is not set (create $ROOT/config.env from config.env.example)" >&2; exit 64
+fi
+
+# ---- workspace box (metres, robot base frame). The defaults are the box calibrated on the
+#      reference table with a Franka Hand; measure your own (see teleop/README.md) --------------
+WS_X_MIN=${FRANKA_WS_X_MIN:-0.150}
+WS_X_MAX=${FRANKA_WS_X_MAX:-0.700}
+WS_Y_MIN=${FRANKA_WS_Y_MIN:--0.550}
+WS_Y_MAX=${FRANKA_WS_Y_MAX:-0.500}
+WS_Z_MIN=${FRANKA_WS_Z_MIN:-0.100}
+WS_Z_MAX=${FRANKA_WS_Z_MAX:-0.656}
+
+# ---- teleop mapping -------------------------------------------------------------------------
+SCALE_TRANS=${FRANKA_SCALE_TRANS:-1.0}   # 1:1 translation: 30 cm at the chest = 30 cm on the robot
+SCALE_ROT=${FRANKA_SCALE_ROT:-0.5}       # 0.5x rotation: halves wrist angles, kills wrist-jitter amplification
+MAX_STEP=${FRANKA_MAX_STEP:-0.0055}      # 5.5 mm/frame x 90 Hz = 0.5 m/s cap (ISO/TS 15066 collaborative speed);
+                                         # 2 cm/frame = 1.8 m/s tripped the FR3 joint-velocity limit
+
+# ---- helpers ------------------------------------------------------------------------------------
+mirror_ensure() { systemctl --user is-active --quiet franka-state-mirror || systemctl --user start franka-state-mirror; }
+mirror_epoch() { tr ' ' '\n' < /tmp/franka_mirror.txt 2>/dev/null | grep '^epoch=' | cut -d= -f2 || true; }
+file_age_ms() { python3 -c 'import os,sys,time; print(int((time.time()-os.path.getmtime(sys.argv[1]))*1000))' "$1" 2>/dev/null || echo 999999; }
+
+# wait_state_ready TIMEOUT_S EPOCH0: new servo epoch in the mirror, 16-token init pose, EE fresher than 250 ms.
+wait_state_ready() {
+  local timeout=$1 epoch0=${2:-0} t0 e
+  t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -lt "$timeout" ]; do
+    e=$(mirror_epoch)
+    if [ -n "$e" ] && [ "$e" != "0" ] && [ "$e" != "$epoch0" ] \
+       && [ "$(wc -w < /tmp/franka_init_pose.txt 2>/dev/null || echo 0)" = 16 ] \
+       && [ "$(file_age_ms /tmp/franka_current_ee.txt)" -lt 250 ]; then
+      echo "state ready: epoch=$e ee_age_ms=$(file_age_ms /tmp/franka_current_ee.txt)"
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "state NOT ready after ${timeout}s: mirror active=$(systemctl --user is-active franka-state-mirror || true) epoch=$(mirror_epoch) (was $epoch0)" \
+       "init_pose_tokens=$(wc -w < /tmp/franka_init_pose.txt 2>/dev/null || echo 0) ee_age_ms=$(file_age_ms /tmp/franka_current_ee.txt)" >&2
+  return 1
+}
+
+bridge_start() {
+  rm -f /tmp/franka_live.log
+  nohup "$PY" -u "$BRIDGE" \
+    --live --udp-host "$REMOTE" \
+    --max-step "$MAX_STEP" \
+    --ws-x-min "$WS_X_MIN" --ws-x-max "$WS_X_MAX" \
+    --ws-y-min "$WS_Y_MIN" --ws-y-max "$WS_Y_MAX" \
+    --ws-z-min "$WS_Z_MIN" --ws-z-max "$WS_Z_MAX" \
+    --scale "$SCALE_TRANS" --rot-scale "$SCALE_ROT" \
+    --print-hz 1 > /tmp/franka_live.log 2>&1 &
+  echo "LIVE bridge PID=$!"; disown; sleep 4; head -16 /tmp/franka_live.log
+}
+
+# Kill the bridge. Not pkill -f (it matches its own wrapper); grep -v excludes this script.
+bridge_kill() {
+  ps -eo pid,cmd | grep -E '02_webxr_to_franka' | grep -v -E 'grep|franka-teleop|bash -c' | awk '{print $1}' | xargs -r kill 2>/dev/null || true
+}
+
+servo_start() {
+  mirror_ensure
+  local e0; e0=$(mirror_epoch)
+  rm -f /tmp/franka_init_pose.txt /tmp/franka_servo.log
+  "$BIN/franka-remote" start pose 2>&1 | tee /tmp/franka_servo.log
+  wait_state_ready 20 "${e0:-0}"
+}
+
+servo_stop() { "$BIN/franka-remote" stop; }
+home_seq()   { "$BIN/franka-remote" goto home; }
+
+case "${1:-live}" in
+  home)        home_seq ;;
+  servo-only)  servo_start ;;
+  bridge-only|02-only) bridge_start ;;
+  live)
+    servo_start
+    echo
+    bridge_start
+    echo
+    pgrep -af "02_webxr_to_franka" 2>&1 | grep -v "pgrep\|bash" || true
+    ;;
+  restart)
+    echo "restart: stop teleop -> home -> relaunch"
+    bridge_kill
+    sleep 1
+    mirror_ensure
+    e0=$(mirror_epoch)
+    rm -f /tmp/franka_init_pose.txt
+    ok=0; rc=0
+    for attempt in 1 2 3; do
+      set +e; "$BIN/franka-remote" restart pose home 2>&1 | tee -a /tmp/franka_servo.log; rc=${PIPESTATUS[0]}; set -e
+      if [ "$rc" = 0 ]; then ok=1; break; fi
+      if [ "$rc" = 75 ]; then echo "restart: RT host busy (attempt $attempt/3), retrying in 5 s" | tee -a /tmp/franka_servo.log >&2; sleep 5; continue; fi
+      break   # home failed (rc 1, e.g. a reflex from a collision) or channel error: do not retry blindly
+    done
+    if [ "$ok" != 1 ]; then
+      echo "restart FATAL: franka-remote restart pose home failed (rc=$rc); servo/bridge NOT restarted. Clear the workspace, check Desk, then 'franka-remote status'." | tee -a /tmp/franka_servo.log >&2
+      exit 1
+    fi
+    wait_state_ready 15 "${e0:-0}" || { echo "restart FATAL: servo restarted but no state reached the mirror" | tee -a /tmp/franka_servo.log >&2; exit 1; }
+    bridge_start
+    echo "restart done"
+    ;;
+  stop)   bridge_kill; servo_stop ;;
+  status)
+    echo "== bridge"; pgrep -af "02_webxr_to_franka" | grep -v pgrep || echo "  (not running)"
+    echo "== mirror"; "$BIN/franka_state_mirror" --check --dir /tmp || true
+    echo "== remote"; "$BIN/franka-remote" status || true
+    ;;
+  wait-ready) wait_state_ready "${2:-15}" "${3:-0}" ;;
+  *)
+    echo "usage: $0 [home | servo-only | bridge-only | live | restart | stop | status | wait-ready [timeout_s]]" >&2
+    exit 1
+    ;;
+esac
