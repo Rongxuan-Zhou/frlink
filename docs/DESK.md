@@ -1,3 +1,5 @@
+English | [中文](DESK.zh-CN.md)
+
 # Franka Desk: the robot's own console
 
 Desk is the web interface built into the FR3 control cabinet, and the only place where the robot is

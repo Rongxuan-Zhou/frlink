@@ -1,3 +1,5 @@
+English | [中文](GUIDE.zh-CN.md)
+
 # Using the FR3 + RT-host combination from your own computer
 
 This guide is for driving the Franka FR3 behind its real-time host ("the RT host", an Alienware

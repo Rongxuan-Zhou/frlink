@@ -1,3 +1,5 @@
+English | [中文](README.zh-CN.md)
+
 # frlink
 
 A two-machine setup for a Franka FR3 with the Franka Hand. A small, pinned real-time host owns
